@@ -1,448 +1,234 @@
-// GVPIE Editor Compute Kernel
-// All text-editing logic runs here
+#import "contract.wgsl"
 
-struct EditorState {
-    cursor_line: atomic<u32>,
-    cursor_col: atomic<u32>,
-    scroll_line: atomic<u32>,
-    scroll_col: atomic<u32>,
-    text_length: atomic<u32>,
-    line_count: atomic<u32>,
-    key_ring_head: atomic<u32>,
-    key_ring_tail: atomic<u32>,
-    running: atomic<u32>,
-    dirty: atomic<u32>,
-    frame_count: atomic<u32>,
-    reserved: array<u32, 245>,
-};
+@group(BINDING_GROUP) @binding(BINDING_STATE)
+var<storage, read_write> state: EditorState;
 
-struct KeyEvent {
-    scancode: u32,
-    state: u32,
-    modifiers: u32,
-    _padding: u32,
-};
+@group(BINDING_GROUP) @binding(BINDING_UNIFORMS)
+var<uniform> uniforms: RenderUniforms;
 
-struct HostEvent {
-    event_type: u32,
-    data0: u32,
-    data1: u32,
-    data2: u32,
-};
+@group(BINDING_GROUP) @binding(BINDING_EVENTS)
+var<storage, read_write> events: array<u32>;
 
-struct HostEventsBuffer {
-    version: u32,
-    event_count: u32,
-    frame_number: u32,
-    _padding: u32,
-    events: array<HostEvent, 256>,
-};
+@group(BINDING_GROUP) @binding(BINDING_REQUESTS)
+var<storage, read_write> requests: array<u32>;
 
-@group(0) @binding(0) var<storage, read_write> state: EditorState;
-@group(0) @binding(1) var<storage, read_write> text: array<u32>;
-@group(0) @binding(2) var<storage, read_write> key_ring: array<KeyEvent, 1>;
-@group(0) @binding(4) var<storage, read> host_events: HostEventsBuffer;
-const MAX_TEXT_SIZE: u32 = 10000000u;
-const TAB_SIZE: u32 = 4u;
-
-const KEY_BACKSPACE: u32 = 8u;
-const KEY_TAB: u32 = 9u;
-const KEY_RETURN: u32 = 13u;
-const KEY_LEFT: u32 = 37u;
-const KEY_UP: u32 = 38u;
-const KEY_RIGHT: u32 = 39u;
-const KEY_DOWN: u32 = 40u;
-const KEY_DELETE: u32 = 46u;
-const KEY_HOME: u32 = 36u;
-const KEY_END: u32 = 35u;
-
-const EVENT_TYPE_KEY_PRESS: u32 = 1u;
-const EVENT_TYPE_KEY_RELEASE: u32 = 2u;
-
-fn is_newline(value: u32) -> bool {
-    return value == 10u;
+fn store_camera_3d(camera: Camera3D) {
+    let base = CAMERA_DATA_OFFSET;
+    state.text_data[base + 0u] = bitcast_u32(camera.position.x);
+    state.text_data[base + 1u] = bitcast_u32(camera.position.y);
+    state.text_data[base + 2u] = bitcast_u32(camera.position.z);
+    state.text_data[base + 3u] = bitcast_u32(camera.focus.x);
+    state.text_data[base + 4u] = bitcast_u32(camera.focus.y);
+    state.text_data[base + 5u] = bitcast_u32(camera.focus.z);
+    state.text_data[base + 6u] = bitcast_u32(camera.up.x);
+    state.text_data[base + 7u] = bitcast_u32(camera.up.y);
+    state.text_data[base + 8u] = bitcast_u32(camera.up.z);
+    state.text_data[base + 9u] = bitcast_u32(camera.fov);
+    state.text_data[base + 10u] = bitcast_u32(camera.move_speed);
+    state.text_data[base + 11u] = bitcast_u32(camera.mouse_sensitivity);
+    state.text_data[base + 12u] = 0u;
+    state.text_data[base + 13u] = 0u;
+    state.text_data[base + 14u] = 0u;
+    state.text_data[CAMERA_SENTINEL_INDEX] = CAMERA_SENTINEL;
 }
 
-fn is_printable(value: u32) -> bool {
-    return value >= 32u && value <= 126u;
-}
+fn init_card_system() {
+    state.text_data[CARDS_SENTINEL_INDEX] = CARDS_SENTINEL;
+    state.text_data[CARDS_COUNT_INDEX] = 0u;
+    state.text_data[CARDS_SELECTED_INDEX] = 0xFFFFFFFFu;
+    state.text_data[CARDS_HOVERED_INDEX] = 0xFFFFFFFFu;
+    state.text_data[CARDS_TIME_INDEX] = bitcast_u32(0.0);
 
-fn get_line_start(line_index: u32) -> u32 {
-    if line_index == 0u {
-        return 0u;
+    for (var i: u32 = 0u; i < CARDS_TOTAL_FLOATS; i = i + 1u) {
+        state.text_data[CARDS_DATA_START + i] = 0u;
     }
-
-    var count: u32 = 0u;
-    var index: u32 = 0u;
-    let len = atomicLoad(&state.text_length);
-
-    loop {
-        if index >= len || count == line_index {
-            break;
-        }
-
-        if is_newline(text[index]) {
-            count = count + 1u;
-        }
-
-        index = index + 1u;
-    }
-
-    return index;
 }
 
-fn get_line_length(line: u32) -> u32 {
-    let start = get_line_start(line);
-    let len = atomicLoad(&state.text_length);
-
-    var cursor = start;
-
-    loop {
-        if cursor >= len {
-            break;
-        }
-        if is_newline(text[cursor]) {
-            break;
-        }
-        cursor = cursor + 1u;
-    }
-
-    return cursor - start;
+fn set_cards_count(count: u32) {
+    state.text_data[CARDS_COUNT_INDEX] = count;
 }
 
-fn cursor_to_offset() -> u32 {
-    let line = atomicLoad(&state.cursor_line);
-    let col = atomicLoad(&state.cursor_col);
-    return get_line_start(line) + col;
+fn set_cards_time(time: f32) {
+    state.text_data[CARDS_TIME_INDEX] = bitcast_u32(time);
 }
 
-fn clamp_cursor() {
-    let line_count = max(atomicLoad(&state.line_count), 1u);
-    let current_line = min(atomicLoad(&state.cursor_line), line_count - 1u);
-    atomicStore(&state.cursor_line, current_line);
-
-    let current_col = min(atomicLoad(&state.cursor_col), get_line_length(current_line));
-    atomicStore(&state.cursor_col, current_col);
-}
-
-fn count_lines() -> u32 {
-    let len = atomicLoad(&state.text_length);
-    if len == 0u {
-        return 1u;
-    }
-
-    var lines: u32 = 1u;
-    var i: u32 = 0u;
-
-    loop {
-        if i >= len {
-            break;
-        }
-
-        if is_newline(text[i]) {
-            lines = lines + 1u;
-        }
-
-        i = i + 1u;
-    }
-
-    return lines;
-}
-
-fn insert_char(c: u32) {
-    let len = atomicLoad(&state.text_length);
-    if len >= MAX_TEXT_SIZE - 1u {
+fn write_splat(index: u32, position: vec3<f32>, scale: f32, color: vec3<f32>, alpha: f32) {
+    if (index >= MAX_SPLATS) {
         return;
     }
+    let base = CARDS_DATA_START + index * SPLAT_FLOATS;
+    state.text_data[base + 0u] = bitcast_u32(position.x);
+    state.text_data[base + 1u] = bitcast_u32(position.y);
+    state.text_data[base + 2u] = bitcast_u32(position.z);
+    state.text_data[base + 3u] = bitcast_u32(scale);
+    state.text_data[base + 4u] = bitcast_u32(color.x);
+    state.text_data[base + 5u] = bitcast_u32(color.y);
+    state.text_data[base + 6u] = bitcast_u32(color.z);
+    state.text_data[base + 7u] = bitcast_u32(alpha);
+}
 
-    let offset = cursor_to_offset();
+fn clear_event() {
+    events[0] = EVENT_NONE;
+}
 
-    var idx = len;
-    loop {
-        if idx <= offset {
-            break;
-        }
-
-        text[idx] = text[idx - 1u];
-        idx = idx - 1u;
-    }
-
-    text[offset] = c;
-    atomicStore(&state.text_length, len + 1u);
-
-    if is_newline(c) {
-        let line = atomicLoad(&state.cursor_line) + 1u;
-        atomicStore(&state.cursor_line, line);
-        atomicStore(&state.cursor_col, 0u);
-        atomicStore(&state.line_count, atomicLoad(&state.line_count) + 1u);
+fn toggle_3d_mode() {
+    if (is_3d_mode(state.scroll_offset)) {
+        state.scroll_offset = MODE_2D;
     } else {
-        atomicStore(&state.cursor_col, atomicLoad(&state.cursor_col) + 1u);
+        state.scroll_offset = MODE_3D;
+        if (!camera_is_initialised()) {
+            store_camera_3d(default_camera_3d());
+        }
     }
-
-    atomicStore(&state.dirty, 1u);
 }
 
-fn delete_before_cursor() {
-    let offset = cursor_to_offset();
-    if offset == 0u {
+fn handle_keyboard_event(key: u32, modifiers: u32) {
+    if (key == KEY_SPACE && (modifiers & MOD_CTRL) != 0u) {
+        toggle_3d_mode();
         return;
     }
 
-    let len = atomicLoad(&state.text_length);
-    let removed = text[offset - 1u];
-
-    var i = offset;
-    loop {
-        if i >= len {
-            break;
-        }
-        text[i - 1u] = text[i];
-        i = i + 1u;
+    if (!is_3d_mode(state.scroll_offset)) {
+        return;
     }
 
-    atomicStore(&state.text_length, len - 1u);
-
-    if is_newline(removed) {
-        let line = atomicLoad(&state.cursor_line);
-        if line > 0u {
-            let new_line = line - 1u;
-            atomicStore(&state.cursor_line, new_line);
-            atomicStore(&state.cursor_col, get_line_length(new_line));
-        }
-        atomicStore(&state.line_count, max(atomicLoad(&state.line_count) - 1u, 1u));
+    var camera = default_camera_3d();
+    if (camera_is_initialised()) {
+        camera = load_camera_3d();
     } else {
-        let col = atomicLoad(&state.cursor_col);
-        if col > 0u {
-            atomicStore(&state.cursor_col, col - 1u);
+        store_camera_3d(camera);
+    }
+    let forward = normalize(camera.focus - camera.position);
+    let right = normalize(cross(forward, camera.up));
+    let step = camera.move_speed * 0.2;
+    var moved = false;
+
+    switch (key) {
+        case KEY_W: {
+        camera.position = camera.position + forward * step;
+            moved = true;
         }
-    }
-
-    atomicStore(&state.dirty, 1u);
-}
-
-fn delete_at_cursor() {
-    let offset = cursor_to_offset();
-    let len = atomicLoad(&state.text_length);
-    if offset >= len {
-        return;
-    }
-
-    let removed = text[offset];
-
-    var i = offset + 1u;
-    loop {
-        if i >= len {
-            break;
+        case KEY_S: {
+        camera.position = camera.position - forward * step;
+            moved = true;
         }
-        text[i - 1u] = text[i];
-        i = i + 1u;
+        case KEY_A: {
+        camera.position = camera.position - right * step;
+            moved = true;
+        }
+        case KEY_D: {
+        camera.position = camera.position + right * step;
+            moved = true;
+        }
+        case KEY_SPACE: {
+        camera.position = camera.position + camera.up * step;
+            moved = true;
+        }
+        case KEY_SHIFT: {
+        camera.position = camera.position - camera.up * step;
+            moved = true;
+        }
+        default: {}
     }
 
-    atomicStore(&state.text_length, len - 1u);
-
-    if is_newline(removed) {
-        atomicStore(&state.line_count, max(atomicLoad(&state.line_count) - 1u, 1u));
-    }
-
-    atomicStore(&state.dirty, 1u);
-}
-
-fn move_cursor_left() {
-    let col = atomicLoad(&state.cursor_col);
-    if col > 0u {
-        atomicStore(&state.cursor_col, col - 1u);
-        return;
-    }
-
-    let line = atomicLoad(&state.cursor_line);
-    if line == 0u {
-        return;
-    }
-
-    let prev_line = line - 1u;
-    atomicStore(&state.cursor_line, prev_line);
-    atomicStore(&state.cursor_col, get_line_length(prev_line));
-}
-
-fn move_cursor_right() {
-    let line = atomicLoad(&state.cursor_line);
-    let col = atomicLoad(&state.cursor_col);
-    let len = get_line_length(line);
-
-    if col < len {
-        atomicStore(&state.cursor_col, col + 1u);
-        return;
-    }
-
-    let line_count = atomicLoad(&state.line_count);
-    if line + 1u < line_count {
-        atomicStore(&state.cursor_line, line + 1u);
-        atomicStore(&state.cursor_col, 0u);
+    if (moved) {
+        camera.focus = camera.position + forward;
+        store_camera_3d(camera);
     }
 }
 
-fn move_cursor_up() {
-    let line = atomicLoad(&state.cursor_line);
-    if line == 0u {
-        return;
+fn generate_3d_cards() {
+    if (!cards_initialized()) {
+        init_card_system();
     }
 
-    atomicStore(&state.cursor_line, line - 1u);
-    clamp_cursor();
-}
+    let cards_per_row: u32 = 8u;
+    let cards_per_col: u32 = 4u;
+    let splats_per_side: u32 = 4u;
+    let splats_per_card: u32 = splats_per_side * splats_per_side;
 
-fn move_cursor_down() {
-    let line = atomicLoad(&state.cursor_line);
-    let line_count = atomicLoad(&state.line_count);
+    var splat_index: u32 = 0u;
+    let row_offset = f32(cards_per_row - 1u) * 0.5;
+    let col_offset = f32(cards_per_col - 1u) * 0.5;
 
-    if line + 1u >= line_count {
-        return;
-    }
+    for (var c: u32 = 0u; c < cards_per_col && splat_index < MAX_SPLATS; c = c + 1u) {
+        for (var r: u32 = 0u; r < cards_per_row && splat_index < MAX_SPLATS; r = r + 1u) {
+            let base_x = (f32(r) - row_offset) * 4.0;
+            let base_z = (f32(c) - col_offset) * 3.5;
+            let base_y = 2.5 + sin(uniforms.time * 0.8 + f32(r) * 0.6 + f32(c) * 0.4) * 0.4;
 
-    atomicStore(&state.cursor_line, line + 1u);
-    clamp_cursor();
-}
+            for (var sy: u32 = 0u; sy < splats_per_side && splat_index < MAX_SPLATS; sy = sy + 1u) {
+                for (var sx: u32 = 0u; sx < splats_per_side && splat_index < MAX_SPLATS; sx = sx + 1u) {
+                    let offset_x = (f32(sx) - 1.5) * 0.7;
+                    let offset_z = (f32(sy) - 1.5) * 0.6;
+                    let wave = sin(uniforms.time * 1.5 + f32(sx) * 0.7 + f32(sy) * 0.5 + f32(r) * 0.3) * 0.1;
 
-fn move_cursor_home() {
-    atomicStore(&state.cursor_col, 0u);
-}
+                    let position = vec3<f32>(
+                        base_x + offset_x,
+                        base_y + wave,
+                        base_z + offset_z
+                    );
 
-fn move_cursor_end() {
-    let line = atomicLoad(&state.cursor_line);
-    atomicStore(&state.cursor_col, get_line_length(line));
-}
+                    let scale = 0.55;
 
-fn process_key(event: KeyEvent) {
-    if event.state == 0u {
-        return;
-    }
+                    let color = vec3<f32>(
+                        clamp(0.35 + f32(r) * 0.05, 0.2, 0.9),
+                        clamp(0.4 + f32(c) * 0.04, 0.2, 0.9),
+                        clamp(0.8 - f32(r + c) * 0.03, 0.1, 0.9)
+                    );
 
-    let code = event.scancode;
+                    let alpha = 0.65;
 
-    if code == KEY_LEFT {
-        move_cursor_left();
-        return;
-    }
-    if code == KEY_RIGHT {
-        move_cursor_right();
-        return;
-    }
-    if code == KEY_UP {
-        move_cursor_up();
-        return;
-    }
-    if code == KEY_DOWN {
-        move_cursor_down();
-        return;
-    }
-    if code == KEY_HOME {
-        move_cursor_home();
-        return;
-    }
-    if code == KEY_END {
-        move_cursor_end();
-        return;
-    }
-    if code == KEY_BACKSPACE {
-        delete_before_cursor();
-        return;
-    }
-    if code == KEY_DELETE {
-        delete_at_cursor();
-        return;
-    }
-    if code == KEY_RETURN {
-        insert_char(10u);
-        return;
-    }
-    if code == KEY_TAB {
-        var i: u32 = 0u;
-        loop {
-            if i >= TAB_SIZE {
+                    write_splat(splat_index, position, scale, color, alpha);
+                    splat_index = splat_index + 1u;
+                }
+            }
+
+            if (splat_index >= MAX_SPLATS) {
                 break;
             }
-            insert_char(32u);
-            i = i + 1u;
         }
-        return;
     }
 
-    var character = 0u;
-    if code >= 65u && code <= 90u {
-        character = code + 32u;
-    } else if code >= 48u && code <= 57u {
-        character = code;
-    } else if code == 32u {
-        character = 32u;
-    }
-
-    if is_printable(character) {
-        insert_char(character);
-    }
+    set_cards_count(splat_index);
 }
 
-fn process_input_queue() {
-    let has_event = atomicLoad(&state.key_ring_head);
-    if has_event == 0u {
-        return;
-    }
-
-    let event = key_ring[0];
-    process_key(event);
-
-    atomicStore(&state.key_ring_head, 0u);
+fn handle_scroll_event(delta_bits: u32) {
+    let delta = bitcast<f32>(delta_bits);
+    let base_scroll = f32(state.scroll_offset & 0xFFFFu);
+    let updated = clamp(base_scroll + delta * 50.0, 0.0, 10000.0);
+    state.scroll_offset = u32(updated);
 }
 
 fn process_events() {
-    let count = min(host_events.event_count, 256u);
-    var i: u32 = 0u;
-    loop {
-        if i >= count {
-            break;
+    let event_type = events[0];
+    switch (event_type) {
+        case EVENT_SPECIAL_KEY: {
+            let key = events[1];
+            let modifiers = events[2];
+            handle_keyboard_event(key, modifiers);
         }
-
-        let event = host_events.events[i];
-        if event.event_type == EVENT_TYPE_KEY_PRESS {
-            let key_event = KeyEvent(event.data0, 1u, event.data2, 0u);
-            process_key(key_event);
-        } else if event.event_type == EVENT_TYPE_KEY_RELEASE {
-            let key_event = KeyEvent(event.data0, 0u, event.data2, 0u);
-            process_key(key_event);
+        case EVENT_SCROLL: {
+            handle_scroll_event(events[1]);
         }
-
-        i = i + 1u;
+        default: {}
     }
+    clear_event();
 }
 
-fn initialize() {
-    atomicStore(&state.running, 1u);
-    atomicStore(&state.cursor_line, 0u);
-    atomicStore(&state.cursor_col, 0u);
-    atomicStore(&state.scroll_line, 0u);
-    atomicStore(&state.scroll_col, 0u);
-    atomicStore(&state.text_length, 0u);
-    atomicStore(&state.line_count, 1u);
-    atomicStore(&state.key_ring_head, 0u);
-    atomicStore(&state.key_ring_tail, 0u);
-    atomicStore(&state.dirty, 0u);
-    atomicStore(&state.frame_count, 0u);
-}
-
-@compute @workgroup_size(1, 1, 1)
-fn main() {
-    if atomicLoad(&state.running) == 0u {
-        initialize();
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x != 0u) {
+        return;
     }
 
+    if (!cards_initialized()) {
+        init_card_system();
+    }
+
+    set_cards_time(uniforms.time);
+    generate_3d_cards();
     process_events();
-    process_input_queue();
-
-    if atomicLoad(&state.dirty) == 1u {
-        atomicStore(&state.line_count, count_lines());
-        atomicStore(&state.dirty, 0u);
-    }
-
-    atomicAdd(&state.frame_count, 1u);
-
-    storageBarrier();
+    // Placeholder hook for future GPU-driven requests.
+    requests[0] = 0u;
 }

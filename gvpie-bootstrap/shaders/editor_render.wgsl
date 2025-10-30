@@ -1,196 +1,170 @@
-// GVPIE Editor Render Shader
-// Renders the UTF-32 text buffer using a bitmap font
-
-struct EditorState {
-    cursor_line: atomic<u32>,
-    cursor_col: atomic<u32>,
-    scroll_line: atomic<u32>,
-    scroll_col: atomic<u32>,
-    text_length: atomic<u32>,
-    line_count: atomic<u32>,
-    key_ring_head: atomic<u32>,
-    key_ring_tail: atomic<u32>,
-    running: atomic<u32>,
-    dirty: atomic<u32>,
-    frame_count: atomic<u32>,
-    reserved: array<u32, 245>,
-};
-
-struct KeyEvent {
-    scancode: u32,
-    state: u32,
-    modifiers: u32,
-    _padding: u32,
-};
-
-@group(0) @binding(0) var<storage, read_write> state: EditorState;
-@group(0) @binding(1) var<storage, read_write> text: array<u32>;
-@group(0) @binding(2) var<storage, read_write> key_ring: array<KeyEvent>;
-@group(0) @binding(3) var<storage, read> font_atlas: array<u32>;
-
-const CHAR_WIDTH: f32 = 8.0;
-const CHAR_HEIGHT: f32 = 8.0;
-const COLS_VISIBLE: u32 = 160u;
-const ROWS_VISIBLE: u32 = 90u;
-const GUTTER_COLS: u32 = 4u;
-
-const COLOR_BG: vec3<f32> = vec3<f32>(0.05, 0.06, 0.08);
-const COLOR_FG: vec3<f32> = vec3<f32>(0.9, 0.9, 0.9);
-const COLOR_GUTTER: vec3<f32> = vec3<f32>(0.35, 0.40, 0.45);
-const COLOR_CURSOR: vec3<f32> = vec3<f32>(0.2, 0.8, 0.3);
-
-fn is_newline(value: u32) -> bool {
-    return value == 10u;
-}
-
-fn get_line_start(line_index: u32) -> u32 {
-    if line_index == 0u {
-        return 0u;
-    }
-
-    var count: u32 = 0u;
-    var index: u32 = 0u;
-    let len = atomicLoad(&state.text_length);
-
-    loop {
-        if index >= len || count == line_index {
-            break;
-        }
-
-        if is_newline(text[index]) {
-            count = count + 1u;
-        }
-
-        index = index + 1u;
-    }
-
-    return index;
-}
-
-fn get_char_at(line: u32, col: u32) -> u32 {
-    let start = get_line_start(line);
-    let len = atomicLoad(&state.text_length);
-    let index = start + col;
-
-    if index >= len {
-        return 32u;
-    }
-
-    let value = text[index];
-    if is_newline(value) {
-        return 32u;
-    }
-
-    return value;
-}
-
-fn sample_glyph(codepoint: u32, cell_x: u32, cell_y: u32) -> f32 {
-    if codepoint < 32u || codepoint > 126u {
-        return 0.0;
-    }
-
-    let glyph = codepoint - 32u;
-    let row = font_atlas[glyph * 8u + cell_y];
-    let bit = (row >> (7u - cell_x)) & 1u;
-
-    return f32(bit);
-}
-
-fn draw_line_number(line_number: u32, digit_index: u32, cell_x: u32, cell_y: u32) -> f32 {
-    if digit_index >= GUTTER_COLS {
-        return 0.0;
-    }
-
-    var divisor: u32 = 1u;
-    switch digit_index {
-        case 0u: {
-            divisor = 1000u;
-        }
-        case 1u: {
-            divisor = 100u;
-        }
-        case 2u: {
-            divisor = 10u;
-        }
-        default: {
-            divisor = 1u;
-        }
-    }
-
-    let digit = (line_number / divisor) % 10u;
-    return sample_glyph(48u + digit, cell_x, cell_y);
-}
+#import "contract.wgsl"
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+    @location(0) frag_coord: vec2<f32>,
+}
+
+@group(BINDING_GROUP) @binding(BINDING_STATE)
+var<storage, read> state: EditorState;
+
+@group(BINDING_GROUP) @binding(BINDING_UNIFORMS)
+var<uniform> uniforms: RenderUniforms;
+
+@group(BINDING_GROUP) @binding(BINDING_FONT_TEXTURE)
+var font_texture: texture_2d<f32>;
+
+@group(BINDING_GROUP) @binding(BINDING_FONT_SAMPLER)
+var font_sampler: sampler;
+
+fn march_terrain(ray_origin: vec3<f32>, ray_dir: vec3<f32>, time: f32) -> vec4<f32> {
+    var t: f32 = 0.0;
+    for (var i: u32 = 0u; i < 80u; i = i + 1u) {
+        let pos = ray_origin + ray_dir * t;
+        let terrain =
+            sin(pos.x * 0.2) * cos(pos.z * 0.2) * 3.0 +
+            sin(pos.x * 0.5) * cos(pos.z * 0.5) * 1.0 +
+            sin(pos.x * 1.0 + time * 0.2) * cos(pos.z * 1.0 - time * 0.2) * 0.5;
+        let dist = pos.y - terrain;
+
+        if (abs(dist) < 0.05) {
+            let eps = 0.01;
+            let normal = normalize(vec3<f32>(
+                terrain - (
+                    sin((pos.x - eps) * 0.2) * cos(pos.z * 0.2) * 3.0 +
+                    sin((pos.x - eps) * 0.5) * cos(pos.z * 0.5) * 1.0 +
+                    sin((pos.x - eps) * 1.0 + time * 0.2) * cos(pos.z * 1.0 - time * 0.2) * 0.5
+                ),
+                1.0,
+                terrain - (
+                    sin(pos.x * 0.2) * cos((pos.z - eps) * 0.2) * 3.0 +
+                    sin(pos.x * 0.5) * cos((pos.z - eps) * 0.5) * 1.0 +
+                    sin(pos.x * 1.0 + time * 0.2) * cos((pos.z - eps) * 1.0 - time * 0.2) * 0.5
+                )
+            ));
+
+            let light_dir = normalize(vec3<f32>(0.8, 0.6, 0.4));
+            let diffuse = clamp(dot(normal, light_dir), 0.3, 1.0);
+            let specular = pow(max(0.0, dot(reflect(-light_dir, normal), -ray_dir)), 8.0) * 0.5;
+
+            let slope = 1.0 - normal.y;
+            var base_color = vec3<f32>(0.3, 0.6, 0.3);
+            if (slope > 0.35) {
+                base_color = vec3<f32>(0.5, 0.5, 0.5);
+            }
+            if (terrain < -2.0) {
+                base_color = vec3<f32>(0.2, 0.3, 0.8);
+            }
+
+            return vec4<f32>(base_color * (diffuse + specular), 1.0);
+        }
+
+        t = t + max(0.05, dist * 0.5);
+        if (t > 120.0) {
+            break;
+        }
+    }
+
+    let sun_dir = normalize(vec3<f32>(sin(time * 0.1), 0.5 + sin(time * 0.05) * 0.3, cos(time * 0.1)));
+    let sun_intensity = pow(max(0.0, dot(ray_dir, sun_dir)), 32.0);
+    let base_sky = vec3<f32>(0.3, 0.45, 0.75);
+    let horizon = vec3<f32>(0.9, 0.7, 0.5);
+    let sky_t = clamp(0.5 * (ray_dir.y + 1.0), 0.0, 1.0);
+
+    let sky_color = mix(horizon, base_sky, sky_t) + vec3<f32>(sun_intensity);
+    return vec4<f32>(sky_color, 1.0);
+}
+
+fn render_gaussian_splats(ray_origin: vec3<f32>, ray_dir: vec3<f32>) -> vec4<f32> {
+    if (!cards_initialized()) {
+        return vec4<f32>(0.0);
+    }
+
+    let count = get_cards_count();
+    if (count == 0u) {
+        return vec4<f32>(0.0);
+    }
+
+    var accumulated = vec4<f32>(0.0);
+
+    for (var i: u32 = 0u; i < count; i = i + 1u) {
+        let splat = read_splat(i);
+        let radius = splat.scale * 1.2;
+        let oc = ray_origin - splat.position;
+        let a = dot(ray_dir, ray_dir);
+        let b = 2.0 * dot(oc, ray_dir);
+        let c = dot(oc, oc) - radius * radius;
+        let disc = b * b - 4.0 * a * c;
+
+        if (disc > 0.0) {
+            let t = (-b - sqrt(disc)) / (2.0 * a);
+            if (t > 0.0) {
+                let hit = ray_origin + ray_dir * t;
+                let intensity = evaluate_gaussian_splat(splat, hit);
+                if (intensity > 0.001) {
+                    let sample = vec4<f32>(splat.color * intensity, intensity);
+                    accumulated = accumulated + vec4<f32>(
+                        sample.rgb * (1.0 - accumulated.a),
+                        sample.a * (1.0 - accumulated.a)
+                    );
+
+                    if (accumulated.a > 0.98) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    return accumulated;
+}
+
+fn render_3d_scene(coord: vec2<f32>, time: f32) -> vec4<f32> {
+    let viewport = vec2<f32>(uniforms.viewport_width, uniforms.viewport_height);
+    var camera = default_camera_3d();
+    if (camera_is_initialised()) {
+        camera = load_camera_3d();
+    }
+    let ray_origin = camera.position;
+    let ray_dir = get_camera_ray(camera, coord, viewport);
+
+    let terrain = march_terrain(ray_origin, ray_dir, time);
+    let splats = render_gaussian_splats(ray_origin, ray_dir);
+
+    return vec4<f32>(
+        mix(terrain.rgb, splats.rgb, clamp(splats.a, 0.0, 1.0)),
+        1.0
+    );
+}
+
+fn render_text_layer(coord: vec2<f32>) -> vec4<f32> {
+    let uv = coord / vec2<f32>(uniforms.viewport_width, uniforms.viewport_height);
+    let glyph = textureSample(font_texture, font_sampler, uv);
+    return vec4<f32>(glyph.rgb, glyph.a);
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+fn vs_main(@builtin(vertex_index) vid: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(1.0, -1.0),
         vec2<f32>(-1.0, 1.0),
         vec2<f32>(-1.0, 1.0),
         vec2<f32>(1.0, -1.0),
-        vec2<f32>(1.0, 1.0),
+        vec2<f32>(1.0, 1.0)
     );
 
-    var uvs = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-    );
-
-    var out: VertexOutput;
-    out.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
-    out.uv = uvs[vertex_index];
-    return out;
+    var output: VertexOutput;
+    output.position = vec4<f32>(positions[vid], 0.0, 1.0);
+    output.frag_coord = (positions[vid] * 0.5 + vec2<f32>(0.5)) *
+        vec2<f32>(uniforms.viewport_width, uniforms.viewport_height);
+    return output;
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let screen_x = in.uv.x * CHAR_WIDTH * f32(COLS_VISIBLE);
-    let screen_y = in.uv.y * CHAR_HEIGHT * f32(ROWS_VISIBLE);
-
-    let col = u32(floor(screen_x / CHAR_WIDTH));
-    let row = u32(floor(screen_y / CHAR_HEIGHT));
-
-    let cell_x = u32(screen_x) % 8u;
-    let cell_y = u32(screen_y) % 8u;
-
-    let scroll_line = atomicLoad(&state.scroll_line);
-    let scroll_col = atomicLoad(&state.scroll_col);
-
-    let world_line = row + scroll_line;
-    let world_col = col + scroll_col;
-
-    if col < GUTTER_COLS {
-        let value = draw_line_number(world_line + 1u, col, cell_x, cell_y);
-        let gutter_color = mix(COLOR_BG, COLOR_GUTTER, value);
-        return vec4<f32>(gutter_color, 1.0);
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    if (is_3d_mode(state.scroll_offset)) {
+        return render_3d_scene(input.frag_coord, uniforms.time);
     }
-
-    let text_col = world_col - GUTTER_COLS;
-
-    let cursor_line = atomicLoad(&state.cursor_line);
-    let cursor_col = atomicLoad(&state.cursor_col);
-
-    if world_line == cursor_line && text_col == cursor_col {
-        let frame = atomicLoad(&state.frame_count);
-        let blink = (frame / 30u) % 2u;
-        if blink == 1u {
-            return vec4<f32>(COLOR_CURSOR, 1.0);
-        }
-    }
-
-    let codepoint = get_char_at(world_line, text_col);
-    let glyph_value = sample_glyph(codepoint, cell_x, cell_y);
-    let color = mix(COLOR_BG, COLOR_FG, glyph_value);
-
-    return vec4<f32>(color, 1.0);
+    return render_text_layer(input.frag_coord);
 }
