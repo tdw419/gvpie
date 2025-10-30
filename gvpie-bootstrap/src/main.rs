@@ -15,10 +15,12 @@ use winit::{
 mod gpu_requirements;
 mod gpu_binary_loader;
 mod syscall_translator;
+mod cpu_interpreter;
 mod io_contract;
 use io_contract::EventType;
 use gpu_binary_loader::{GPUBinaryLoader, GPUProcessContainer};
 use syscall_translator::SyscallTranslator;
+use cpu_interpreter::Interpreter;
 
 const RING_SIZE: usize = 64;
 const MAX_TEXT_SIZE: usize = 10_000_000; // 10MB of UTF-32 text
@@ -861,6 +863,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
     let mut gpu_process: Option<GPUProcessContainer> = None;
+    let mut interpreter: Option<Interpreter> = None;
 
     log::info!("╔═══════════════════════════════════════════════════════════════╗");
     log::info!("║              GVPIE v0.1 - GPU-Native Development             ║");
@@ -900,7 +903,7 @@ fn main() {
     if args.len() > 1 {
         let elf_path = &args[1];
         log::info!("Attempting to load ELF file: {}", elf_path);
-        match GPUBinaryLoader::load_elf_binary(elf_path, &bootstrap.device) {
+        match GPUBinaryLoader::load_elf_binary(elf_path, &bootstrap.device, &bootstrap.queue) {
             Ok(process) => {
                 log::info!("Successfully loaded ELF binary.");
                 gpu_process = Some(process);
@@ -909,6 +912,11 @@ fn main() {
                 log::error!("Failed to load ELF binary: {}", e);
             }
         }
+    }
+
+    let syscall_translator = SyscallTranslator {};
+    if let Some(process) = &gpu_process {
+        interpreter = Some(Interpreter::new(process, &syscall_translator));
     }
 
     let window_for_loop = window.clone();
@@ -981,11 +989,8 @@ fn main() {
                     _ => {}
                 },
                 Event::AboutToWait => {
-                    if let Some(process) = &gpu_process {
-                        // For now, just print the entry point of the loaded binary once.
-                        if host_events.frame_number == 1 {
-                            log::info!("Loaded ELF with entry point: {:#x}", process.entry_point);
-                        }
+                    if let Some(interp) = &mut interpreter {
+                        interp.step();
                     }
 
                     host_events.frame_number = host_events.frame_number.wrapping_add(1);
