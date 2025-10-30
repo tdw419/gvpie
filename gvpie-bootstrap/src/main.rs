@@ -13,8 +13,12 @@ use winit::{
 };
 
 mod gpu_requirements;
+mod gpu_binary_loader;
+mod syscall_translator;
 mod io_contract;
 use io_contract::EventType;
+use gpu_binary_loader::{GPUBinaryLoader, GPUProcessContainer};
+use syscall_translator::SyscallTranslator;
 
 const RING_SIZE: usize = 64;
 const MAX_TEXT_SIZE: usize = 10_000_000; // 10MB of UTF-32 text
@@ -855,6 +859,9 @@ fn main() {
         .filter_level(log::LevelFilter::Info)
         .init();
 
+    let args: Vec<String> = std::env::args().collect();
+    let mut gpu_process: Option<GPUProcessContainer> = None;
+
     log::info!("╔═══════════════════════════════════════════════════════════════╗");
     log::info!("║              GVPIE v0.1 - GPU-Native Development             ║");
     log::info!("║                 Bootstrap initialisation begins              ║");
@@ -889,10 +896,26 @@ fn main() {
     log::info!("✓ Window created (1200x800)");
 
     let mut bootstrap = pollster::block_on(FrozenBootstrap::new(window.clone()));
+
+    if args.len() > 1 {
+        let elf_path = &args[1];
+        log::info!("Attempting to load ELF file: {}", elf_path);
+        match GPUBinaryLoader::load_elf_binary(elf_path, &bootstrap.device) {
+            Ok(process) => {
+                log::info!("Successfully loaded ELF binary.");
+                gpu_process = Some(process);
+            }
+            Err(e) => {
+                log::error!("Failed to load ELF binary: {}", e);
+            }
+        }
+    }
+
     let window_for_loop = window.clone();
     let window_id = window_for_loop.id();
     let mut modifiers_state = ModifiersState::default();
     let mut host_events = io_contract::EventsBuffer::new();
+    let syscall_translator = SyscallTranslator {};
 
     log::info!("=== GVPIE Bootstrap Ready ===");
     log::info!("The CPU is now frozen. All logic runs on GPU.");
@@ -958,6 +981,13 @@ fn main() {
                     _ => {}
                 },
                 Event::AboutToWait => {
+                    if let Some(process) = &gpu_process {
+                        // For now, just print the entry point of the loaded binary once.
+                        if host_events.frame_number == 1 {
+                            log::info!("Loaded ELF with entry point: {:#x}", process.entry_point);
+                        }
+                    }
+
                     host_events.frame_number = host_events.frame_number.wrapping_add(1);
                     bootstrap.upload_events(&host_events);
                     host_events.clear();
