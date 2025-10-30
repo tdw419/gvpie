@@ -1,0 +1,7 @@
+# Ignore build artifacts
+target/
+
+# Ignore downloaded Linux kernel and initrd
+gvpie-bootstrap/tinycore/
+third_party/
+gvpie-bootstrap/tinycore/
