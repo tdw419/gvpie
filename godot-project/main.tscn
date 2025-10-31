@@ -1,8 +1,0 @@
-[gd_scene load_steps=2 format=3 uid="uid://c3w0x0y0w0w0"]
-
-[ext_resource type="Script" path="res://rust-gdnative.gdextension" id="1_xcy0k"]
-
-[node name="Main" type="Node3D"]
-
-[node name="InfiniteMapOSNode" type="Node" parent="."]
-script = ExtResource("1_xcy0k")

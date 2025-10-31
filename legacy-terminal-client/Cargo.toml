@@ -1,9 +1,0 @@
-[package]
-name = "legacy-terminal-client"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-tokio = { version = "1", features = ["full"] }
-gpu-protocol = { path = "../gpu-protocol" }
-bincode = "1.3.3"

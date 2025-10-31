@@ -5,3 +5,5 @@ target/
 gvpie-bootstrap/tinycore/
 third_party/
 gvpie-bootstrap/tinycore/
+/gvpie-bootstrap/assets/
+/assets/
