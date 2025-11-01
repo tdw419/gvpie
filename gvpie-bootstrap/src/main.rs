@@ -1,10 +1,7 @@
-mod gvx_canvas;
 mod text_cpu;
 
 use std::sync::Arc;
 
-use gvx_canvas::WgpuHybridCanvas;
-use gpu_memory_manager::{Architecture, GPUMemoryManager, GpuSyscallTrap};
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, RequestAdapterOptions,
     Surface, SurfaceConfiguration, SurfaceError, SurfaceTargetUnsafe, TextureUsages,
@@ -20,9 +17,13 @@ struct BootstrapApp {
     window: Option<Window>,
     surface: Option<Surface<'static>>,
     device: Option<Arc<wgpu::Device>>,
+    queue: Option<Arc<wgpu::Queue>>,
     config: Option<SurfaceConfiguration>,
-    manager: Option<GPUMemoryManager<WgpuHybridCanvas>>,
-    trap: Option<GpuSyscallTrap>,
+    pixel_llm_pipeline: Option<wgpu::ComputePipeline>,
+    pixel_llm_bind_group: Option<wgpu::BindGroup>,
+    input_texture: Option<wgpu::Texture>,
+    output_texture: Option<wgpu::Texture>,
+    cursor_pos: (u32, u32),
 }
 
 impl BootstrapApp {
@@ -31,9 +32,13 @@ impl BootstrapApp {
             window: None,
             surface: None,
             device: None,
+            queue: None,
             config: None,
-            manager: None,
-            trap: None,
+            pixel_llm_pipeline: None,
+            pixel_llm_bind_group: None,
+            input_texture: None,
+            output_texture: None,
+            cursor_pos: (0, 0),
         }
     }
 }
@@ -63,6 +68,7 @@ impl ApplicationHandler for BootstrapApp {
             pollster::block_on(adapter.request_device(&DeviceDescriptor::default(), None)).expect("device");
         let device = Arc::new(device_raw);
         let queue = Arc::new(queue_raw);
+        self.queue = Some(queue.clone());
         let caps = surface.get_capabilities(&adapter);
         let format = caps
             .formats
@@ -83,30 +89,96 @@ impl ApplicationHandler for BootstrapApp {
         };
         surface.configure(device.as_ref(), &config);
 
-        let mut manager = GPUMemoryManager::new(WgpuHybridCanvas::new(
-            device.clone(),
-            queue.clone(),
-            config.width,
-            config.height,
-        ));
-        let pid = manager.create_process(Architecture::X86_64);
-        let base: u64 = 0x1000_0000;
-        let text = b"dir1 dir2\n";
-        manager.map_emulated_memory(pid, base, text.len());
-        manager.write_emulated_data(pid, base, text);
-        let trap = GpuSyscallTrap {
-            pid,
-            syscall_num: 1,
-            arg1: 1,
-            arg2: base,
-            arg3: text.len() as u64,
+        let pixel_llm_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Pixel LLM Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/pixel_llm.wgsl").into()),
+        });
+
+        let texture_desc = wgpu::TextureDescriptor {
+            label: Some("LLM Texture"),
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
         };
 
-        self.trap = Some(trap);
-        self.manager = Some(manager);
+        let input_texture = device.create_texture(&texture_desc);
+        let output_texture = device.create_texture(&texture_desc);
+
+        let pixel_llm_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("pixel_llm_bind_group_layout"),
+            });
+
+        let pixel_llm_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Pixel LLM Pipeline Layout"),
+                bind_group_layouts: &[&pixel_llm_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let pixel_llm_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Pixel LLM Pipeline"),
+            layout: Some(&pixel_llm_pipeline_layout),
+            module: &pixel_llm_shader,
+            entry_point: "main",
+            compilation_options: Default::default(),
+        });
+
+        let input_texture_view = input_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let output_texture_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let pixel_llm_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &pixel_llm_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&input_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&output_texture_view),
+                },
+            ],
+            label: Some("pixel_llm_bind_group"),
+        });
+
         self.config = Some(config);
         self.device = Some(device);
         self.surface = Some(surface);
+        self.pixel_llm_pipeline = Some(pixel_llm_pipeline);
+        self.pixel_llm_bind_group = Some(pixel_llm_bind_group);
+        self.input_texture = Some(input_texture);
+        self.output_texture = Some(output_texture);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
@@ -115,15 +187,61 @@ impl ApplicationHandler for BootstrapApp {
         }
 
         match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == winit::event::ElementState::Pressed {
+                    if let winit::keyboard::PhysicalKey::Code(key_code) = event.physical_key {
+                        if let Some(ch) = key_code_to_char(key_code) {
+                            if let (Some(queue), Some(input_texture), Some(config)) = (
+                                self.queue.as_ref(),
+                                self.input_texture.as_ref(),
+                                self.config.as_ref(),
+                            ) {
+                                if let Some(color) = char_to_color(ch) {
+                                    queue.write_texture(
+                                        wgpu::ImageCopyTexture {
+                                            texture: input_texture,
+                                            mip_level: 0,
+                                            origin: wgpu::Origin3d {
+                                                x: self.cursor_pos.0,
+                                                y: self.cursor_pos.1,
+                                                z: 0,
+                                            },
+                                            aspect: wgpu::TextureAspect::All,
+                                        },
+                                        &color,
+                                        wgpu::ImageDataLayout {
+                                            offset: 0,
+                                            bytes_per_row: Some(4),
+                                            rows_per_image: Some(1),
+                                        },
+                                        wgpu::Extent3d {
+                                            width: 1,
+                                            height: 1,
+                                            depth_or_array_layers: 1,
+                                        },
+                                    );
+                                    self.cursor_pos.0 += 1;
+                                    if self.cursor_pos.0 >= config.width {
+                                        self.cursor_pos.0 = 0;
+                                        self.cursor_pos.1 += 1;
+                                        if self.cursor_pos.1 >= config.height {
+                                            self.cursor_pos.1 = 0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(new_size) => {
-                if let (Some(surface), Some(device), Some(config), Some(manager)) =
-                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut(), self.manager.as_mut())
+                if let (Some(surface), Some(device), Some(config)) =
+                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut())
                 {
                     config.width = new_size.width.max(1);
                     config.height = new_size.height.max(1);
                     surface.configure(device.as_ref(), config);
-                    manager.resize_canvas(config.width, config.height);
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {}
@@ -132,15 +250,24 @@ impl ApplicationHandler for BootstrapApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (surface, device, config, manager, trap) = match (
+        let (
+            Some(surface),
+            Some(device),
+            Some(queue),
+            Some(config),
+            Some(pixel_llm_pipeline),
+            Some(pixel_llm_bind_group),
+            Some(output_texture),
+        ) = (
             self.surface.as_ref(),
             self.device.as_ref(),
+            self.queue.as_ref(),
             self.config.as_ref(),
-            self.manager.as_mut(),
-            self.trap.as_ref(),
-        ) {
-            (Some(surface), Some(device), Some(config), Some(manager), Some(trap)) => (surface, device, config, manager, trap),
-            _ => return,
+            self.pixel_llm_pipeline.as_ref(),
+            self.pixel_llm_bind_group.as_ref(),
+            self.output_texture.as_ref(),
+        ) else {
+            return;
         };
 
         let frame = match surface.get_current_texture() {
@@ -164,10 +291,40 @@ impl ApplicationHandler for BootstrapApp {
             }
         };
 
-        manager.begin_frame();
-        let _ = manager.handle_emulated_syscall(trap);
-        manager.end_frame();
-        manager.canvas_mut().present(&frame.texture);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("LLM Encoder"),
+        });
+
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("LLM Compute Pass"),
+            timestamp_writes: None,
+        });
+        compute_pass.set_pipeline(pixel_llm_pipeline);
+        compute_pass.set_bind_group(0, pixel_llm_bind_group, &[]);
+        compute_pass.dispatch_workgroups(config.width / 8, config.height / 8, 1);
+        drop(compute_pass);
+
+        encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: output_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &frame.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        queue.submit(Some(encoder.finish()));
         frame.present();
     }
 }
@@ -177,4 +334,57 @@ fn main() {
     let event_loop = EventLoop::new().expect("event loop");
     let mut app = BootstrapApp::new();
     event_loop.run_app(&mut app).expect("run_app");
+}
+
+fn key_code_to_char(key_code: winit::keyboard::KeyCode) -> Option<char> {
+    use winit::keyboard::KeyCode;
+    match key_code {
+        KeyCode::KeyA => Some('a'),
+        KeyCode::KeyB => Some('b'),
+        KeyCode::KeyC => Some('c'),
+        KeyCode::KeyD => Some('d'),
+        KeyCode::KeyE => Some('e'),
+        KeyCode::KeyF => Some('f'),
+        KeyCode::KeyG => Some('g'),
+        KeyCode::KeyH => Some('h'),
+        KeyCode::KeyI => Some('i'),
+        KeyCode::KeyJ => Some('j'),
+        KeyCode::KeyK => Some('k'),
+        KeyCode::KeyL => Some('l'),
+        KeyCode::KeyM => Some('m'),
+        KeyCode::KeyN => Some('n'),
+        KeyCode::KeyO => Some('o'),
+        KeyCode::KeyP => Some('p'),
+        KeyCode::KeyQ => Some('q'),
+        KeyCode::KeyR => Some('r'),
+        KeyCode::KeyS => Some('s'),
+        KeyCode::KeyT => Some('t'),
+        KeyCode::KeyU => Some('u'),
+        KeyCode::KeyV => Some('v'),
+        KeyCode::KeyW => Some('w'),
+        KeyCode::KeyX => Some('x'),
+        KeyCode::KeyY => Some('y'),
+        KeyCode::KeyZ => Some('z'),
+        KeyCode::Digit1 => Some('1'),
+        KeyCode::Digit2 => Some('2'),
+        KeyCode::Digit3 => Some('3'),
+        KeyCode::Digit4 => Some('4'),
+        KeyCode::Digit5 => Some('5'),
+        KeyCode::Digit6 => Some('6'),
+        KeyCode::Digit7 => Some('7'),
+        KeyCode::Digit8 => Some('8'),
+        KeyCode::Digit9 => Some('9'),
+        KeyCode::Digit0 => Some('0'),
+        KeyCode::Space => Some(' '),
+        _ => None,
+    }
+}
+
+/// Any printable ASCII character becomes machine-ready RGB (R=code, G/B zero).
+pub fn char_to_color(ch: char) -> Option<[u8; 4]> {
+    if ch.is_ascii() && !ch.is_ascii_control() {
+        Some([ch as u8, 0, 0, 255])
+    } else {
+        None
+    }
 }

@@ -10,10 +10,6 @@ pollster = "0.3"
 bytemuck = { version = "1.16", features = ["derive"] }
 indexmap = "=2.2.6"
 
-# GVX path deps
-hybrid_canvas = { path = "../GVX/crates/hybrid_canvas" }
-gpu_memory_manager = { path = "../GVX/crates/gpu_memory_manager" }
-gpu_binary_loader = { path = "../GVX/crates/gpu_binary_loader" }
 
 [profile.release]
 opt-level = 3
