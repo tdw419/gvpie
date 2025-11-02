@@ -1,45 +1,57 @@
 import torch
 import os
-from PIL import Image
+import mmap
 import numpy as np
 
 class GVPIEBridge:
     """
     Interface between the Python Pixel OS and the Rust/WGSL GVPIE environment.
-    Uses a file-based IPC mechanism for communication.
+    Uses a memory-mapped file for low-latency, zero-copy communication.
     """
 
-    def __init__(self, shared_dir: str = "/tmp/gvpie_ipc"):
-        self.shared_dir = shared_dir
-        self.machine_texture_path = os.path.join(shared_dir, "machine_texture.bin")
-        self.human_texture_path = os.path.join(shared_dir, "human_texture.png")
+    def __init__(self, file_path: str = "/tmp/gvpie_input.bin", size: int = 1024):
+        self.file_path = file_path
+        self.size = size
+        self.mmap = self._init_mmap()
 
-        # Ensure the shared directory exists
-        os.makedirs(self.shared_dir, exist_ok=True)
+    def _init_mmap(self):
+        """Initializes the memory-mapped file."""
+        if os.path.exists(self.file_path):
+            with open(self.file_path, "r+b") as f:
+                return mmap.mmap(f.fileno(), self.size)
+        else:
+            with open(self.file_path, "wb") as f:
+                f.write(b'\0' * self.size)
+            with open(self.file_path, "r+b") as f:
+                return mmap.mmap(f.fileno(), self.size)
 
-    def write_to_machine_texture(self, machine_code: torch.Tensor):
+    def send_command(self, command: str):
         """
-        Sends text/commands to GVPIE's machine texture via a binary file.
-        The machine_code tensor is expected to be (N, 3) with R=ASCII.
+        Sends a command to the GVPIE environment via the memory-mapped file.
+        Protocol:
+        - First byte is a flag: 1 = new command, 0 = no command.
+        - The rest of the buffer is the null-terminated command string.
         """
-        # Extract the red channel (ASCII codes) and write to a binary file.
-        ascii_bytes = machine_code[:, 0].cpu().numpy().astype(np.uint8)
-        with open(self.machine_texture_path, "wb") as f:
-            f.write(ascii_bytes.tobytes())
+        if self.mmap:
+            # Ensure the first byte is 0 before writing.
+            while self.mmap[0] != 0:
+                pass
 
-    def read_from_human_texture(self) -> torch.Tensor:
-        """
-        Reads the expanded glyphs from GVPIE's human texture file.
-        The GVPIE environment is expected to save its output as a PNG.
-        Returns a torch.Tensor or None if the file doesn't exist.
-        """
-        if not os.path.exists(self.human_texture_path):
-            return None
+            # Write the command to the buffer.
+            cmd_bytes = command.encode('utf-8')
+            self.mmap[1:len(cmd_bytes) + 1] = cmd_bytes
+            self.mmap[len(cmd_bytes) + 1] = 0 # Null terminator
 
-        try:
-            with Image.open(self.human_texture_path) as img:
-                img_array = np.array(img.convert("RGB"))
-                return torch.from_numpy(img_array)
-        except Exception as e:
-            print(f"Error reading human texture: {e}")
-            return None
+            # Set the flag to indicate a new command is available.
+            self.mmap[0] = 1
+            self.mmap.flush()
+
+    def read_output(self) -> str:
+        """Reads the output from the GVPIE environment."""
+        # This will be implemented in a later step.
+        raise NotImplementedError
+
+    def __del__(self):
+        """Closes the memory-mapped file."""
+        if self.mmap:
+            self.mmap.close()

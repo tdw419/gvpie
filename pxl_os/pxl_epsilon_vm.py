@@ -1,28 +1,32 @@
 from typing import Dict, Any, List, Tuple
 import torch
 
+from .fuzzy_font_engine import FuzzyFontEngine
+
 class PxlEpsilonVM:
     """
     The PXL-ε Fuzzy VM executes pixel programs with progressive thresholds.
     """
 
-    def __init__(self, canvas: torch.Tensor):
-        self.canvas = canvas
-        self.height, self.width, self.channels = canvas.shape
-        self.opcode_patterns = {
-            # 5x7 pixel patterns for opcodes will be defined here
-            'TXT': None,
-            'RECT': None,
-            'JMP': None,
-            'HALT': None,
-        }
+    def __init__(self, font_engine: FuzzyFontEngine):
+        self.font_engine = font_engine
 
-    def fuzzy_execute(self, program_pixels: torch.Tensor) -> Dict[str, Any]:
+    def execute(self, program: str):
         """
         Executes a pixel program.
         """
-        # Tokenization, parsing, and execution logic will be implemented here.
-        raise NotImplementedError
+        for line in program.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+
+            opcode = parts[0]
+            args = parts[1:]
+
+            if opcode == "TXT":
+                x, y = int(args[0]), int(args[1])
+                text = " ".join(args[2:])
+                self.font_engine.render_text(x, y, text)
 
     def _tokenize(self, canvas: torch.Tensor, threshold: float) -> List[List[Dict]]:
         """
