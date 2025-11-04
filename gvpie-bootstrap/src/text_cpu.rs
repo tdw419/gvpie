@@ -76,14 +76,14 @@ impl CpuTextSurface {
 const GLYPH_WIDTH: usize = 5;
 const GLYPH_HEIGHT: usize = 7;
 
+use crate::glyph_bootstrap::glyph_rows;
+
 fn glyph_pattern(ch: char) -> [u8; GLYPH_HEIGHT] {
-    match ch {
-        'd' => [0b01110, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01111],
-        'i' => [0b00100, 0, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'r' => [0b11110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
-        ' ' => [0; GLYPH_HEIGHT],
-        _ => [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111],
+    if ch.is_ascii() {
+        if let Some(pattern) = glyph_rows(ch as u8) {
+            return *pattern;
+        }
     }
+    // Default pattern for unknown characters
+    [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111]
 }

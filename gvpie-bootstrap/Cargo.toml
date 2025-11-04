@@ -9,10 +9,14 @@ wgpu = "0.20"
 pollster = "0.3"
 bytemuck = { version = "1.16", features = ["derive"] }
 indexmap = "=2.2.6"
+# hybrid_canvas = { git = "https://github.com/d-e-s-o/hybrid-canvas.git" }
+# gpu_memory_manager = { git = "https://github.com/d-e-s-o/gpu-memory-manager.git" }
+
 
 env_logger = "0.11"
 memmap2 = "0.9"
 log = "0.4"
+futures = "0.3"
 
 [profile.release]
 opt-level = 3

@@ -6,7 +6,7 @@ use wgpu::{
     ImageDataLayout, Origin3d, Queue, Texture, TextureAspect,
 };
 
-use hybrid_canvas::{HybridCanvasBackend, TextRunOperation};
+// use hybrid_canvas::{HybridCanvasBackend, TextRunOperation};
 
 use crate::text_cpu::CpuTextSurface;
 
@@ -88,21 +88,21 @@ impl WgpuHybridCanvas {
     }
 }
 
-impl HybridCanvasBackend for WgpuHybridCanvas {
-    fn begin_frame(&mut self) {
-        self.cpu.clear_rgba([0x12, 0x12, 0x16, 0xFF]);
-    }
+// impl HybridCanvasBackend for WgpuHybridCanvas {
+//     fn begin_frame(&mut self) {
+//         self.cpu.clear_rgba([0x12, 0x12, 0x16, 0xFF]);
+//     }
 
-    fn execute_text_run(&mut self, op: TextRunOperation) {
-        self.cpu
-            .draw_text(&op.text, op.x as i32, op.y as i32 + op.px_size as i32, op.px_size);
-    }
+//     fn execute_text_run(&mut self, op: TextRunOperation) {
+//         self.cpu
+//             .draw_text(&op.text, op.x as i32, op.y as i32 + op.px_size as i32, op.px_size);
+//     }
 
-    fn end_frame(&mut self) {
-        // staging upload happens in `present`
-    }
+//     fn end_frame(&mut self) {
+//         // staging upload happens in `present`
+//     }
 
-    fn resize(&mut self, width: u32, height: u32) {
-        self.resize(width, height);
-    }
-}
+//     fn resize(&mut self, width: u32, height: u32) {
+//         self.resize(width, height);
+//     }
+// }

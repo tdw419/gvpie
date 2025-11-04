@@ -1,6 +1,6 @@
 mod input_mux;
 
-use input_mux::InputMultiplexer;
+use input_mux::IPC;
 use wgpu::include_wgsl;
 use winit::{
     application::ApplicationHandler,
@@ -17,7 +17,8 @@ struct App {
     config: Option<wgpu::SurfaceConfiguration>,
     size: Option<winit::dpi::PhysicalSize<u32>>,
     render_pipeline: Option<wgpu::RenderPipeline>,
-    input_mux: InputMultiplexer,
+    ipc: IPC,
+    commands: Vec<String>,
 }
 
 impl App {
@@ -30,21 +31,35 @@ impl App {
             config: None,
             size: None,
             render_pipeline: None,
-            input_mux: InputMultiplexer::new("/tmp/gvpie_input.bin"),
+            ipc: IPC::new(),
+            commands: Vec::new(),
         }
     }
 
-    fn process_input(&mut self, keyboard_char: Option<char>) {
-        if let Some(input) = self.input_mux.next_command(keyboard_char) {
-            match input {
-                input_mux::InputSource::Keyboard(ch) => {
-                    println!("Keyboard input: {}", ch);
-                }
-                input_mux::InputSource::FileCommand(data) => {
-                    println!("File command: {:?}", data);
-                }
+    fn process_ipc_commands(&mut self) {
+        if self.ipc.control_mmap[0] != 0 {
+            let end = self.ipc.machine_mmap.iter().position(|&b| b == 0).unwrap_or(self.ipc.machine_mmap.len());
+            let cmd_bytes = &self.ipc.machine_mmap[0..end];
+            let command = String::from_utf8_lossy(cmd_bytes).to_string();
+
+            self.ipc.control_mmap[0] = 0; // Clear the input flag
+            self.ipc.control_mmap.flush().unwrap();
+
+            if command == "READ" {
+                self.read_human_texture();
+            } else {
+                self.commands.push(command);
             }
         }
+    }
+
+    fn read_human_texture(&mut self) {
+        // This is a placeholder for now.
+        // In a real implementation, we would copy the texture to the buffer.
+        self.ipc.human_mmap.copy_from_slice(&vec![128; 128 * 64 * 4]);
+        self.ipc.control_mmap[1] = 1; // Set the output flag
+        self.ipc.control_mmap.flush().unwrap();
+        println!("Reading human texture");
     }
 }
 
@@ -59,22 +74,8 @@ impl ApplicationHandler for App {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(&window).unwrap();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }))
-        .unwrap();
-
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-            },
-            None,
-        ))
-        .unwrap();
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps.formats[0];
@@ -92,12 +93,7 @@ impl ApplicationHandler for App {
         surface.configure(&device, &config);
 
         let shader = device.create_shader_module(include_wgsl!("shaders/pixel_abi.wgsl"));
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
-                push_constant_ranges: &[],
-            });
+        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor::default());
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -105,6 +101,7 @@ impl ApplicationHandler for App {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &[],
+                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -114,22 +111,11 @@ impl ApplicationHandler for App {
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
+            primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
+            multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
 
@@ -142,21 +128,11 @@ impl ApplicationHandler for App {
         self.render_pipeline = Some(render_pipeline);
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        if let WindowEvent::Ime(winit::event::Ime::Commit(ref text)) = event {
-            for ch in text.chars() {
-                self.process_input(Some(ch));
-            }
-        }
-
+    fn window_event( &mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent,) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
+                self.process_ipc_commands();
                 self.render().unwrap();
             }
             _ => (),
@@ -168,9 +144,7 @@ impl App {
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.as_ref().unwrap().get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.as_ref().unwrap().create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let mut encoder = self.device.as_ref().unwrap().create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -179,18 +153,11 @@ impl App {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
+                ..Default::default()
             });
 
             render_pass.set_pipeline(self.render_pipeline.as_ref().unwrap());

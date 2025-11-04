@@ -5,6 +5,7 @@
 //! glyphs.
 
 use crate::glyph_rom::GLYPH_ROM;
+use wgpu::util::DeviceExt;
 
 pub const FIRST_PRINTABLE: u8 = 32;
 pub const LAST_PRINTABLE: u8 = 126;
@@ -57,4 +58,12 @@ pub fn glyph_rows(ascii: u8) -> Option<&'static [u8; GLYPH_HEIGHT_USIZE]> {
     } else {
         Some(&GLYPH_ROM[(ascii - FIRST_PRINTABLE) as usize])
     }
+}
+
+pub fn create_glyph_atlas_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Glyph Atlas Buffer"),
+        contents: bytemuck::cast_slice(&GLYPH_ROM),
+        usage: wgpu::BufferUsages::STORAGE,
+    })
 }
