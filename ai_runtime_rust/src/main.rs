@@ -1,0 +1,16 @@
+use ai_runtime::{AiRuntime, ApiServer};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().with_target(false).init();
+
+    tracing::info!("Starting AI Runtime");
+
+    let runtime = AiRuntime::new()
+        .await
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let server = ApiServer::new(runtime);
+
+    server.run("0.0.0.0:8081").await?;
+    Ok(())
+}
