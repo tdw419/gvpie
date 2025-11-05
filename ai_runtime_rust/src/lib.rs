@@ -4,6 +4,7 @@ pub mod config;
 pub mod database;
 pub mod errors;
 pub mod gpu_bridge;
+pub mod gpu_ppl_analyzer;
 pub mod gvpie_analysis;
 pub mod logging;
 pub mod models;
@@ -16,6 +17,7 @@ pub use database::{
     DecisionRecord, EventRecord, ExperienceDB, PatternAnalysis, SystemMetricsRecord, TrendAnalysis,
 };
 pub use errors::{AiRuntimeError, Result};
+pub use gpu_ppl_analyzer::{GpuAnalysisMetrics, GpuPplAnalyzer};
 pub use gvpie_analysis::{
     GvpieAnalysisReport, GvpieAnalyzer, OptimizationSuggestion, PerformanceInsights,
 };

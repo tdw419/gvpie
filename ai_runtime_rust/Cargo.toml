@@ -10,19 +10,21 @@ gpu = []
 [dependencies]
 daemonize = "0.5.0"
 gvpie-core = { path = "../gvpie-core" }
-tokio = { workspace = true }
+tokio = { version = "1.0", features = ["full"] }
 axum = "0.6.20"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.96"
 thiserror = "1.0"
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 anyhow = "1.0"
 sha2 = "0.10"
 serde_yaml = "0.9.21"
 chrono = { version = "0.4.31", features = ["serde"] }
 sysinfo = "0.30"
 rusqlite = { version = "0.30", features = ["bundled", "chrono"] }
+wgpu = "0.19"
+bytemuck = "1.14"
 
 [dev-dependencies]
 
