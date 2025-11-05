@@ -27,8 +27,8 @@ impl GpuExecutionBridge {
             let mut scheduler_guard = self.scheduler.lock().await;
             if scheduler_guard.is_none() {
                 let scheduler = OptimizedGpuExecutionScheduler::new(
-                    gpu_core.device().clone(),
-                    gpu_core.queue().clone(),
+                    gpu_core.device(),
+                    gpu_core.queue(),
                 )
                 .await?;
                 *scheduler_guard = Some(scheduler);

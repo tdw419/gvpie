@@ -103,7 +103,7 @@ impl PixelVmRuntime {
                 .as_ref()
                 .ok_or_else(|| anyhow!("GPU backend requested but no GPU core available"))?;
             let gpu_executor =
-                GpuMachineExecutor::new(gpu_core.device().clone(), gpu_core.queue().clone())?;
+                GpuMachineExecutor::new(gpu_core.device(), gpu_core.queue())?;
             executor.enable_gpu(gpu_executor);
         }
 
