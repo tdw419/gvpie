@@ -1,10 +1,13 @@
-mod gvx_canvas;
+mod canvas;
+mod pxos_db;
+mod pxos_interpreter;
 mod text_cpu;
 
 use std::sync::Arc;
 
-use gvx_canvas::WgpuHybridCanvas;
-use gpu_memory_manager::{Architecture, GPUMemoryManager, GpuSyscallTrap};
+use canvas::WgpuHybridCanvas;
+use pxos_db::PxosDatabase;
+use pxos_interpreter::PxosInterpreter;
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, RequestAdapterOptions,
     Surface, SurfaceConfiguration, SurfaceError, SurfaceTargetUnsafe, TextureUsages,
@@ -21,8 +24,8 @@ struct BootstrapApp {
     surface: Option<Surface<'static>>,
     device: Option<Arc<wgpu::Device>>,
     config: Option<SurfaceConfiguration>,
-    manager: Option<GPUMemoryManager<WgpuHybridCanvas>>,
-    trap: Option<GpuSyscallTrap>,
+    canvas: Option<WgpuHybridCanvas>,
+    db: Option<PxosDatabase>,
 }
 
 impl BootstrapApp {
@@ -32,8 +35,8 @@ impl BootstrapApp {
             surface: None,
             device: None,
             config: None,
-            manager: None,
-            trap: None,
+            canvas: None,
+            db: None,
         }
     }
 }
@@ -45,7 +48,7 @@ impl ApplicationHandler for BootstrapApp {
         }
 
         let instance = Instance::new(InstanceDescriptor::default());
-        let window_attrs = WindowAttributes::default().with_title("gvpie-bootstrap + GVX");
+        let window_attrs = WindowAttributes::default().with_title("PXOS Database Simulation");
         let window = event_loop.create_window(window_attrs).expect("window");
         self.window = Some(window);
         let window_ref = self.window.as_ref().expect("window stored");
@@ -83,27 +86,46 @@ impl ApplicationHandler for BootstrapApp {
         };
         surface.configure(device.as_ref(), &config);
 
-        let mut manager = GPUMemoryManager::new(WgpuHybridCanvas::new(
+        let canvas = WgpuHybridCanvas::new(
             device.clone(),
             queue.clone(),
             config.width,
             config.height,
-        ));
-        let pid = manager.create_process(Architecture::X86_64);
-        let base: u64 = 0x1000_0000;
-        let text = b"dir1 dir2\n";
-        manager.map_emulated_memory(pid, base, text.len());
-        manager.write_emulated_data(pid, base, text);
-        let trap = GpuSyscallTrap {
-            pid,
-            syscall_num: 1,
-            arg1: 1,
-            arg2: base,
-            arg3: text.len() as u64,
-        };
+        );
 
-        self.trap = Some(trap);
-        self.manager = Some(manager);
+        let mut db = PxosDatabase::new();
+        db.canvas.width = config.width;
+        db.canvas.height = config.height;
+        db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
+
+        // Define a language
+        let mut lang = pxos_db::LanguageDef {
+            name: "ppl-v1".to_string(),
+            instructions: Vec::new(),
+        };
+        lang.instructions.push(pxos_db::InstructionDef {
+            op: "SET".to_string(),
+            args: vec!["var".to_string(), "value".to_string()],
+        });
+        lang.instructions.push(pxos_db::InstructionDef {
+            op: "DRAW_PIXEL".to_string(),
+            args: vec!["x".to_string(), "y".to_string(), "color".to_string()],
+        });
+        db.language_defs.insert("ppl-v1".to_string(), lang);
+
+        // Create a program
+        let program = pxos_db::Program {
+            id: "prog-1".to_string(),
+            language: "ppl-v1".to_string(),
+            source: "DRAW_PIXEL 10 10 #ff0000\nDRAW_PIXEL 11 10 #00ff00\nDRAW_PIXEL 12 10 #0000ff".to_string(),
+        };
+        db.programs.insert("prog-1".to_string(), program);
+
+        // Set VM state
+        db.vm_state.program_id = "prog-1".to_string();
+
+        self.db = Some(db);
+        self.canvas = Some(canvas);
         self.config = Some(config);
         self.device = Some(device);
         self.surface = Some(surface);
@@ -117,13 +139,16 @@ impl ApplicationHandler for BootstrapApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(new_size) => {
-                if let (Some(surface), Some(device), Some(config), Some(manager)) =
-                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut(), self.manager.as_mut())
+                if let (Some(surface), Some(device), Some(config), Some(canvas), Some(db)) =
+                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut(), self.canvas.as_mut(), self.db.as_mut())
                 {
                     config.width = new_size.width.max(1);
                     config.height = new_size.height.max(1);
                     surface.configure(device.as_ref(), config);
-                    manager.resize_canvas(config.width, config.height);
+                    canvas.resize(config.width, config.height);
+                    db.canvas.width = config.width;
+                    db.canvas.height = config.height;
+                    db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {}
@@ -132,14 +157,14 @@ impl ApplicationHandler for BootstrapApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (surface, device, config, manager, trap) = match (
+        let (surface, device, config, canvas, db) = match (
             self.surface.as_ref(),
             self.device.as_ref(),
             self.config.as_ref(),
-            self.manager.as_mut(),
-            self.trap.as_ref(),
+            self.canvas.as_mut(),
+            self.db.as_mut(),
         ) {
-            (Some(surface), Some(device), Some(config), Some(manager), Some(trap)) => (surface, device, config, manager, trap),
+            (Some(s), Some(d), Some(c), Some(m), Some(db)) => (s, d, c, m, db),
             _ => return,
         };
 
@@ -164,10 +189,9 @@ impl ApplicationHandler for BootstrapApp {
             }
         };
 
-        manager.begin_frame();
-        let _ = manager.handle_emulated_syscall(trap);
-        manager.end_frame();
-        manager.canvas_mut().present(&frame.texture);
+        PxosInterpreter::step(db);
+        canvas.set_pixels(&db.canvas.pixels);
+        canvas.present(&frame.texture);
         frame.present();
     }
 }

@@ -56,6 +56,10 @@ impl CpuTextSurface {
         &self.buf
     }
 
+    pub fn set_pixels(&mut self, pixels: &[u8]) {
+        self.buf.copy_from_slice(pixels);
+    }
+
     fn fill_block(&mut self, x: i32, y: i32, w: i32, h: i32) {
         for dy in 0..h {
             for dx in 0..w {
