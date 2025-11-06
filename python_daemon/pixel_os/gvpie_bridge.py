@@ -1,201 +1,93 @@
 """
-GVPIE Bridge - Python interface to the GPU AI Runtime
+GVPIE Bridge - File-socket IPC to GVPIE GPU renderer
 
-Provides a high-level API for executing pixel programs and managing cartridges.
+Minimal bridge that talks to GVPIE via /tmp/gvpie/cmd.json
+and reads from /tmp/gvpie/out.raw (RGBA canvas).
 """
 
-import aiohttp
 import json
-from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
-from enum import Enum
+import time
+from pathlib import Path
 
-class ExecutionBackend(Enum):
-    """Execution backend for pixel programs"""
-    GPU = "GPU"
-    CPU = "CPU"
-    AUTO = "Auto"
+# Constants
+GVPIE_DIR = Path("/tmp/gvpie")
+CMD_PATH = GVPIE_DIR / "cmd.json"
+OUT_PATH = GVPIE_DIR / "out.raw"
 
-@dataclass
-class PixelProgramResult:
-    """Result of pixel program execution"""
-    success: bool
-    cycles_executed: int
-    backend: str
-    duration_ms: int
-    canvas_data: Optional[List[int]] = None
-    error: Optional[str] = None
+CANVAS_W = 128
+CANVAS_H = 64
 
 class GVPIEBridge:
-    """Bridge to ai_runtime API for GPU operations"""
+    """File-based IPC bridge to GVPIE renderer."""
 
-    def __init__(self, api_url: str = "http://localhost:8081"):
-        self.api_url = api_url
-        self.session = None
+    def __init__(self, timeout: float = 2.0, poll: float = 0.02):
+        """
+        Args:
+            timeout: Max wait time for GVPIE response (seconds)
+            poll: Poll interval (seconds)
+        """
+        self.timeout = timeout
+        self.poll = poll
+        GVPIE_DIR.mkdir(parents=True, exist_ok=True)
 
-    async def __aenter__(self):
-        """Async context manager entry"""
-        self.session = aiohttp.ClientSession()
-        return self
+    def _write_cmd(self, cmd_dict: dict):
+        """Write command to /tmp/gvpie/cmd.json"""
+        CMD_PATH.write_text(json.dumps(cmd_dict))
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit"""
-        if self.session:
-            await self.session.close()
+    def _wait_for_output(self) -> bytes:
+        """Wait for /tmp/gvpie/out.raw to appear, then read it."""
+        if OUT_PATH.exists():
+            OUT_PATH.unlink()
 
-    async def health_check(self) -> bool:
-        """Check if the API is healthy"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            if OUT_PATH.exists():
+                raw = OUT_PATH.read_bytes()
+                OUT_PATH.unlink()
+                return raw
+            time.sleep(self.poll)
 
+        raise TimeoutError(f"GVPIE did not respond within {self.timeout}s")
+
+    def render_program(self, code: str) -> bytes:
+        """
+        Render a pixel program, return raw RGBA bytes (128×64×4).
+
+        Args:
+            code: Pixel program source (e.g., "TXT 10 10 Hello\\nHALT")
+
+        Returns:
+            Raw RGBA bytes (32768 bytes for 128×64 canvas)
+        """
+        self._write_cmd({
+            "op": "render_program",
+            "code": code,
+            "width": CANVAS_W,
+            "height": CANVAS_H,
+            "format": "RGBA",
+        })
+        return self._wait_for_output()
+
+    def write_text(self, x: int, y: int, text: str) -> bytes:
+        """Convenience: render a single TXT opcode."""
+        code = f"TXT {x} {y} {text}\nHALT"
+        return self.render_program(code)
+
+    def read_canvas(self) -> bytes:
+        """Read current canvas state (if GVPIE supports this)."""
+        self._write_cmd({"op": "read_canvas"})
+        return self._wait_for_output()
+
+    def health_check(self) -> bool:
+        """Check if GVPIE is responding."""
         try:
-            async with self.session.get(
-                f"{self.api_url}/health",
-                timeout=aiohttp.ClientTimeout(total=2)
-            ) as resp:
-                return resp.status == 200
+            self._write_cmd({"op": "ping"})
+            deadline = time.time() + self.timeout
+            while time.time() < deadline:
+                if OUT_PATH.exists():
+                    OUT_PATH.unlink()
+                    return True
+                time.sleep(self.poll)
+            return False
         except Exception:
             return False
-
-    async def get_system_status(self) -> Dict[str, Any]:
-        """Get system status from API"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.get(f"{self.api_url}/status") as resp:
-            return await resp.json()
-
-    async def assemble_program(self, source: str) -> Dict[str, Any]:
-        """Assemble pixel program source code into instructions"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.post(
-            f"{self.api_url}/api/pixel/assemble",
-            json={"source": source}
-        ) as resp:
-            return await resp.json()
-
-    async def execute_program(
-        self,
-        source: str,
-        backend: ExecutionBackend = ExecutionBackend.GPU,
-        max_cycles: int = 1024,
-        canvas_width: int = 128,
-        canvas_height: int = 64
-    ) -> PixelProgramResult:
-        """Execute a pixel program"""
-
-        # Assemble
-        assemble_result = await self.assemble_program(source)
-
-        if not assemble_result.get("success"):
-            return PixelProgramResult(
-                success=False,
-                cycles_executed=0,
-                backend="none",
-                duration_ms=0,
-                error=assemble_result.get("error", "Assembly failed")
-            )
-
-        program = assemble_result["program"]
-
-        # Execute
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.post(
-            f"{self.api_url}/api/pixel/run",
-            json={
-                "program": program,
-                "backend": backend.value,
-                "max_cycles": max_cycles,
-                "canvas_width": canvas_width,
-                "canvas_height": canvas_height
-            }
-        ) as resp:
-            result = await resp.json()
-
-            return PixelProgramResult(
-                success=result.get("success", False),
-                cycles_executed=result.get("cycles_executed", 0),
-                backend=result.get("backend", "unknown"),
-                duration_ms=result.get("duration_ms", 0),
-                canvas_data=result.get("canvas_data"),
-                error=result.get("error")
-            )
-
-    async def list_cartridges(self) -> List[Dict[str, Any]]:
-        """List all available cartridges"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.get(f"{self.api_url}/api/cartridges") as resp:
-            return await resp.json()
-
-    async def create_cartridge(
-        self,
-        cartridge_id: str,
-        name: str,
-        description: str,
-        code: str
-    ) -> Dict[str, Any]:
-        """Create a new cartridge"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.post(
-            f"{self.api_url}/api/cartridges",
-            json={
-                "id": cartridge_id,
-                "name": name,
-                "description": description,
-                "code": code
-            }
-        ) as resp:
-            return await resp.json()
-
-    async def get_cartridge(self, cartridge_id: str) -> Optional[Dict[str, Any]]:
-        """Get a specific cartridge"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.get(
-            f"{self.api_url}/api/cartridges/{cartridge_id}"
-        ) as resp:
-            if resp.status == 200:
-                return await resp.json()
-            return None
-
-    async def execute_cartridge(self, cartridge_id: str) -> Dict[str, Any]:
-        """Execute a cartridge by ID"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.post(
-            f"{self.api_url}/api/execute",
-            json={"code": cartridge_id}
-        ) as resp:
-            return await resp.json()
-
-    async def get_available_backends(self) -> List[str]:
-        """Get list of available execution backends"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-
-        async with self.session.get(f"{self.api_url}/api/pixel/backends") as resp:
-            result = await resp.json()
-            return result.get("backends", [])
-
-
-# Convenience functions for synchronous use
-async def quick_execute(source: str) -> PixelProgramResult:
-    """Quick execution helper"""
-    async with GVPIEBridge() as bridge:
-        return await bridge.execute_program(source)
-
-
-async def quick_health_check() -> bool:
-    """Quick health check helper"""
-    async with GVPIEBridge() as bridge:
-        return await bridge.health_check()

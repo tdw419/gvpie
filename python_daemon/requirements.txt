@@ -1,3 +1,1 @@
-aiohttp>=3.9.0
-asyncio>=3.4.3
-sqlite3  # Built-in with Python
+Pillow>=10.0.0
