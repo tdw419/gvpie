@@ -1,0 +1,78 @@
+# CBAC Delegation Manifest - Default Capabilities for GVPIE
+#
+# This manifest defines which subjects (processes/daemons) have
+# capabilities to access GPU resources.
+
+[[delegations]]
+subject = "zero-human-daemon"
+operation = "RenderProgram"
+permission = "Execute"
+
+[delegations.bounds]
+max_vram_bytes = 16777216  # 16 MB
+max_compute_units = 8
+max_ipc_messages = 1000
+
+[delegations.metadata]
+issued_at = "2025-01-01T00:00:00Z"
+expires_at = "2026-01-01T00:00:00Z"
+issued_by = "system"
+
+[[delegations]]
+subject = "zero-human-daemon"
+operation = "ReadMetrics"
+permission = "ReadOnly"
+
+[delegations.metadata]
+issued_at = "2025-01-01T00:00:00Z"
+expires_at = "2026-01-01T00:00:00Z"
+issued_by = "system"
+
+[[delegations]]
+subject = "gvpie-daemon"
+operation = "RenderProgram"
+permission = "Execute"
+
+[delegations.bounds]
+max_vram_bytes = 33554432  # 32 MB
+max_compute_units = 16
+max_ipc_messages = 2000
+
+[delegations.metadata]
+issued_at = "2025-01-01T00:00:00Z"
+expires_at = "2026-01-01T00:00:00Z"
+issued_by = "system"
+
+[[delegations]]
+subject = "gvpie-daemon"
+operation = "AllocateVRAM"
+permission = "ReadWrite"
+
+[delegations.bounds]
+max_vram_bytes = 33554432  # 32 MB
+max_compute_units = 16
+max_ipc_messages = 2000
+
+[delegations.metadata]
+issued_at = "2025-01-01T00:00:00Z"
+expires_at = "2026-01-01T00:00:00Z"
+issued_by = "system"
+
+# Delegation rules define which subjects can access which resources
+[delegation_rules.compute]
+"zero-human-daemon" = ["gpu_renderer", "shader_compiler"]
+"gvpie-daemon" = ["gpu_renderer", "shader_compiler", "compute_unit_0"]
+
+[delegation_rules.vram]
+"zero-human-daemon" = ["canvas", "texture_buffer"]
+"gvpie-daemon" = ["canvas", "texture_buffer", "vram_pool_0"]
+
+[delegation_rules.ipc]
+"zero-human-daemon" = ["command_channel", "status_channel"]
+"gvpie-daemon" = ["command_channel", "status_channel", "debug_channel"]
+
+# System-wide permissions for each subject
+[permissions]
+"zero-human-daemon" = ["read", "execute"]
+"gvpie-daemon" = ["read", "write", "execute"]
+"debugger" = ["read", "execute"]

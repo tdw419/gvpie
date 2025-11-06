@@ -1,6 +1,8 @@
 use crate::capability::{Capability, CapabilityError, GpuOperation, Permission};
 use crate::delegation::DelegationTable;
+use crate::manifest::DelegationManifest;
 use std::sync::{Arc, Mutex};
+use std::path::Path;
 
 /// Capability verifier - enforces CBAC policies
 ///
@@ -45,6 +47,41 @@ impl CapabilityVerifier {
             delegation_table: Arc::new(Mutex::new(table)),
             enforce: true,
         }
+    }
+
+    /// Create verifier from a delegation manifest file
+    ///
+    /// Formal Contract (ACSL):
+    /// ```c
+    /// /*@
+    ///   requires path points to valid TOML file;
+    ///   ensures \result.Ok() ==> (
+    ///     \forall entry in manifest.delegations:
+    ///       \exists cap in delegation_table:
+    ///         cap.signature == entry_to_capability(entry).signature
+    ///   );
+    ///   assigns delegation_table;
+    /// */
+    /// ```
+    pub fn from_manifest<P: AsRef<Path>>(path: P) -> Result<Self, CapabilityError> {
+        // Load manifest from TOML file
+        let manifest = DelegationManifest::load(path)
+            .map_err(|_| CapabilityError::InvalidSignature)?;
+
+        // Create empty delegation table
+        let mut table = DelegationTable::new();
+
+        // Convert all manifest entries to capabilities and delegate them
+        for entry in &manifest.delegations {
+            let capability = manifest.entry_to_capability(entry)
+                .map_err(|_| CapabilityError::InvalidSignature)?;
+
+            // Delegate with issuer from metadata
+            table.delegate(capability, entry.metadata.issued_by.clone())
+                .map_err(|_| CapabilityError::InvalidSignature)?;
+        }
+
+        Ok(Self::with_table(table))
     }
 
     /// Disable enforcement (TESTING ONLY)
@@ -183,7 +220,6 @@ macro_rules! verify_cap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
 
     #[test]
     fn test_verifier_basic() {
@@ -279,5 +315,38 @@ mod tests {
         assert!(verifier
             .verify("test", GpuOperation::RenderProgram, Permission::ReadOnly)
             .is_ok());
+    }
+
+    #[test]
+    fn test_from_manifest() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+        use crate::manifest::DelegationManifest;
+
+        // Create a test manifest
+        let manifest = DelegationManifest::default();
+
+        // Save to temp file
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let toml_content = toml::to_string_pretty(&manifest).unwrap();
+        temp_file.write_all(toml_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        // Load verifier from manifest
+        let verifier = CapabilityVerifier::from_manifest(temp_file.path()).unwrap();
+
+        // Should be able to verify zero-human-daemon capabilities
+        assert!(verifier
+            .verify("zero-human-daemon", GpuOperation::RenderProgram, Permission::Execute)
+            .is_ok());
+
+        assert!(verifier
+            .verify("zero-human-daemon", GpuOperation::ReadMetrics, Permission::ReadOnly)
+            .is_ok());
+
+        // Should fail for unauthorized subject
+        assert!(verifier
+            .verify("unauthorized", GpuOperation::RenderProgram, Permission::Execute)
+            .is_err());
     }
 }

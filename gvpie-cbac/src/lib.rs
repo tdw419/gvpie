@@ -10,10 +10,12 @@
 pub mod capability;
 pub mod delegation;
 pub mod verifier;
+pub mod manifest;
 
 pub use capability::{Capability, CapabilityError, GpuOperation, Permission};
 pub use delegation::{DelegationTable, DelegationEntry};
 pub use verifier::CapabilityVerifier;
+pub use manifest::{DelegationManifest, DelegationEntry as ManifestEntry, ResourceBounds};
 
 #[cfg(test)]
 mod tests {
