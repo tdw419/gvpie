@@ -9,14 +9,14 @@ gpu = []
 
 [dependencies]
 daemonize = "0.5.0"
-gvpie-core = { path = "../gvpie-core" }
-tokio = { workspace = true }
+# gvpie-core = { path = "../gvpie-core" }  # TODO: Create gvpie-core crate
+tokio = { version = "1.35", features = ["full"] }
 axum = "0.6.20"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.96"
 thiserror = "1.0"
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = "0.3"
 anyhow = "1.0"
 sha2 = "0.10"
 serde_yaml = "0.9.21"
