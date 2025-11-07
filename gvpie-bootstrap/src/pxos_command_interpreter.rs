@@ -1,0 +1,56 @@
+//! A command interpreter for the Pixel OS.
+
+use crate::pxos_db::PxosDatabase;
+
+pub struct CommandInterpreter;
+
+impl CommandInterpreter {
+    /// Parses and executes a command.
+    pub fn parse_and_execute(db: &mut PxosDatabase, command: &str) {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        let op = parts[0];
+
+        match op {
+            "help" => {
+                let help_text = "Available commands:\nhelp - Show this help message\nclear - Clear the screen\necho [message] - Print a message\nrect [x] [y] [w] [h] [color] - Draw a rectangle";
+                // This is a placeholder for adding a DRAW_TEXT instruction.
+                // For now, we'll just print to the console.
+                println!("{}", help_text);
+            }
+            "clear" => {
+                db.canvas.pixels = vec![0; (db.canvas.width * db.canvas.height * 4) as usize];
+            }
+            "echo" => {
+                let message = parts[1..].join(" ");
+                // This is a placeholder for adding a DRAW_TEXT instruction.
+                // For now, we'll just print to the console.
+                println!("{}", message);
+            }
+            "rect" => {
+                let x = parts[1].parse::<u32>().unwrap();
+                let y = parts[2].parse::<u32>().unwrap();
+                let w = parts[3].parse::<u32>().unwrap();
+                let h = parts[4].parse::<u32>().unwrap();
+                let color = parts[5];
+                let r = u8::from_str_radix(&color[1..3], 16).unwrap();
+                let g = u8::from_str_radix(&color[3..5], 16).unwrap();
+                let b = u8::from_str_radix(&color[5..7], 16).unwrap();
+
+                for i in 0..w {
+                    for j in 0..h {
+                        let idx = (((y + j) * db.canvas.width + (x + i)) * 4) as usize;
+                        db.canvas.pixels[idx] = r;
+                        db.canvas.pixels[idx + 1] = g;
+                        db.canvas.pixels[idx + 2] = b;
+                        db.canvas.pixels[idx + 3] = 255;
+                    }
+                }
+            }
+            _ => {
+                // This is a placeholder for adding a DRAW_TEXT instruction.
+                // For now, we'll just print to the console.
+                println!("Unknown command: {}", op);
+            }
+        }
+    }
+}

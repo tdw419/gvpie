@@ -1,4 +1,5 @@
 mod canvas;
+mod pxos_command_interpreter;
 mod pxos_db;
 mod pxos_interpreter;
 mod text_cpu;
@@ -6,6 +7,7 @@ mod text_cpu;
 use std::sync::Arc;
 
 use canvas::WgpuHybridCanvas;
+use pxos_command_interpreter::CommandInterpreter;
 use pxos_db::PxosDatabase;
 use pxos_interpreter::PxosInterpreter;
 use wgpu::{
@@ -149,6 +151,17 @@ impl ApplicationHandler for BootstrapApp {
                     db.canvas.width = config.width;
                     db.canvas.height = config.height;
                     db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state == winit::event::ElementState::Pressed {
+                    if let winit::keyboard::PhysicalKey::Code(key) = event.physical_key {
+                        if key == winit::keyboard::KeyCode::KeyC {
+                            if let Some(db) = self.db.as_mut() {
+                                CommandInterpreter::parse_and_execute(db, "rect 50 50 100 100 #ff00ff");
+                            }
+                        }
+                    }
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {}
