@@ -1,4 +1,5 @@
 mod canvas;
+mod lm_studio_bridge;
 mod pxos_command_interpreter;
 mod pxos_db;
 mod pxos_event_processor;
@@ -164,9 +165,10 @@ impl ApplicationHandler for BootstrapApp {
                                 payload: format!("{:?}", key),
                             });
                         }
-                        if key == winit::keyboard::KeyCode::KeyR {
+                        if key == winit::keyboard::KeyCode::KeyA {
                             if let Some(db) = self.db.as_mut() {
-                                CommandInterpreter::parse_and_execute(db, "relay agent1 agent2 hello");
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                rt.block_on(CommandInterpreter::parse_and_execute(db, "ask draw a red square"));
                             }
                         }
                     }
@@ -229,7 +231,8 @@ impl ApplicationHandler for BootstrapApp {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn main() {
+#[tokio::main]
+async fn main() {
     let event_loop = EventLoop::new().expect("event loop");
     let mut app = BootstrapApp::new();
     event_loop.run_app(&mut app).expect("run_app");

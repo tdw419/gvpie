@@ -6,13 +6,22 @@ pub struct CommandInterpreter;
 
 impl CommandInterpreter {
     /// Parses and executes a command.
-    pub fn parse_and_execute(db: &mut PxosDatabase, command: &str) {
+    pub async fn parse_and_execute(db: &mut PxosDatabase, command: &str) {
         let parts: Vec<&str> = command.split_whitespace().collect();
+        if parts.is_empty() {
+            return;
+        }
         let op = parts[0];
+
+        let allowed_commands = ["help", "clear", "echo", "rect", "relay", "ask"];
+        if !allowed_commands.contains(&op) {
+            println!("Security warning: Command '{}' is not allowed.", op);
+            return;
+        }
 
         match op {
             "help" => {
-                let help_text = "Available commands:\nhelp - Show this help message\nclear - Clear the screen\necho [message] - Print a message\nrect [x] [y] [w] [h] [color] - Draw a rectangle";
+                let help_text = "Available commands:\nhelp - Show this help message\nclear - Clear the screen\necho [message] - Print a message\nrect [x] [y] [w] [h] [color] - Draw a rectangle\nask [prompt] - Ask the AI to generate a command";
                 // This is a placeholder for adding a DRAW_TEXT instruction.
                 // For now, we'll just print to the console.
                 println!("{}", help_text);
@@ -55,6 +64,18 @@ impl CommandInterpreter {
                     to_agent: to,
                     message,
                 });
+            }
+            "ask" => {
+                let prompt = parts[1..].join(" ");
+                match crate::lm_studio_bridge::generate_pxo(&prompt).await {
+                    Ok(command) => {
+                        println!("AI generated command: {}", command);
+                        Box::pin(CommandInterpreter::parse_and_execute(db, &command)).await;
+                    }
+                    Err(e) => {
+                        println!("Error generating command: {}", e);
+                    }
+                }
             }
             _ => {
                 // This is a placeholder for adding a DRAW_TEXT instruction.
