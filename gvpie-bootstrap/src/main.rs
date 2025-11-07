@@ -1,6 +1,7 @@
 mod canvas;
 mod pxos_command_interpreter;
 mod pxos_db;
+mod pxos_event_processor;
 mod pxos_interpreter;
 mod text_cpu;
 
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use canvas::WgpuHybridCanvas;
 use pxos_command_interpreter::CommandInterpreter;
 use pxos_db::PxosDatabase;
+use pxos_event_processor::EventProcessor;
 use pxos_interpreter::PxosInterpreter;
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, RequestAdapterOptions,
@@ -156,11 +158,27 @@ impl ApplicationHandler for BootstrapApp {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == winit::event::ElementState::Pressed {
                     if let winit::keyboard::PhysicalKey::Code(key) = event.physical_key {
-                        if key == winit::keyboard::KeyCode::KeyC {
+                        if let Some(db) = self.db.as_mut() {
+                            db.input_events.push(pxos_db::InputEvent {
+                                event_type: "keyboard".to_string(),
+                                payload: format!("{:?}", key),
+                            });
+                        }
+                        if key == winit::keyboard::KeyCode::KeyR {
                             if let Some(db) = self.db.as_mut() {
-                                CommandInterpreter::parse_and_execute(db, "rect 50 50 100 100 #ff00ff");
+                                CommandInterpreter::parse_and_execute(db, "relay agent1 agent2 hello");
                             }
                         }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state == winit::event::ElementState::Pressed {
+                    if let Some(db) = self.db.as_mut() {
+                        db.input_events.push(pxos_db::InputEvent {
+                            event_type: "mouse".to_string(),
+                            payload: format!("{:?}", button),
+                        });
                     }
                 }
             }
@@ -202,6 +220,7 @@ impl ApplicationHandler for BootstrapApp {
             }
         };
 
+        EventProcessor::process_events(db);
         PxosInterpreter::step(db);
         canvas.set_pixels(&db.canvas.pixels);
         canvas.present(&frame.texture);

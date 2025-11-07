@@ -1,6 +1,6 @@
 //! A command interpreter for the Pixel OS.
 
-use crate::pxos_db::PxosDatabase;
+use crate::pxos_db::{self, PxosDatabase};
 
 pub struct CommandInterpreter;
 
@@ -45,6 +45,16 @@ impl CommandInterpreter {
                         db.canvas.pixels[idx + 3] = 255;
                     }
                 }
+            }
+            "relay" => {
+                let from = parts[1].to_string();
+                let to = parts[2].to_string();
+                let message = parts[3..].join(" ");
+                db.agent_relays.push(pxos_db::AgentRelay {
+                    from_agent: from,
+                    to_agent: to,
+                    message,
+                });
             }
             _ => {
                 // This is a placeholder for adding a DRAW_TEXT instruction.

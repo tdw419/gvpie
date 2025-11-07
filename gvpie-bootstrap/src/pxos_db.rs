@@ -8,6 +8,8 @@ pub struct PxosDatabase {
     pub programs: HashMap<String, Program>,
     pub vm_state: VmState,
     pub canvas: Canvas,
+    pub input_events: Vec<InputEvent>,
+    pub agent_relays: Vec<AgentRelay>,
 }
 
 /// A definition for a programming language.
@@ -55,6 +57,21 @@ pub struct Canvas {
     pub pixels: Vec<u8>, // RGBA8
 }
 
+/// An input event.
+#[derive(Debug, Clone)]
+pub struct InputEvent {
+    pub event_type: String,
+    pub payload: String,
+}
+
+/// An agent relay message.
+#[derive(Debug, Clone)]
+pub struct AgentRelay {
+    pub from_agent: String,
+    pub to_agent: String,
+    pub message: String,
+}
+
 impl PxosDatabase {
     /// Creates a new, empty database.
     pub fn new() -> Self {
@@ -71,6 +88,8 @@ impl PxosDatabase {
                 height: 0,
                 pixels: Vec::new(),
             },
+            input_events: Vec::new(),
+            agent_relays: Vec::new(),
         }
     }
 }
