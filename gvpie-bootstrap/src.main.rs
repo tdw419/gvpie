@@ -13,10 +13,12 @@ use std::sync::Arc;
 
 use canvas::WgpuHybridCanvas;
 use improvement_engine::ImprovementEngine;
+use learning_chatbot::LearningChatbot;
 use pxos_command_interpreter::CommandInterpreter;
 use pxos_db::PxosDatabase;
 use pxos_event_processor::EventProcessor;
 use pxos_interpreter::PxosInterpreter;
+use steering_interface::SteeringInterface;
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, RequestAdapterOptions,
     Surface, SurfaceConfiguration, SurfaceError, SurfaceTargetUnsafe, TextureUsages,
@@ -228,6 +230,8 @@ impl ApplicationHandler for BootstrapApp {
 
         EventProcessor::process_events(db);
         ImprovementEngine::process_queue(db);
+        println!("Conversation: {:?}", db.conversation_history);
+        println!("Proposals: {:?}", db.pending_proposals);
         PxosInterpreter::step(db);
         canvas.set_pixels(&db.canvas.pixels);
         canvas.present(&frame.texture);

@@ -10,6 +10,9 @@ pub struct PxosDatabase {
     pub canvas: Canvas,
     pub input_events: Vec<InputEvent>,
     pub agent_relays: Vec<AgentRelay>,
+    pub conversation_history: Vec<String>,
+    pub improvement_queue: Vec<String>,
+    pub pending_proposals: Vec<String>,
 }
 
 /// A definition for a programming language.
@@ -90,6 +93,9 @@ impl PxosDatabase {
             },
             input_events: Vec::new(),
             agent_relays: Vec::new(),
+            conversation_history: Vec::new(),
+            improvement_queue: Vec::new(),
+            pending_proposals: Vec::new(),
         }
     }
 }

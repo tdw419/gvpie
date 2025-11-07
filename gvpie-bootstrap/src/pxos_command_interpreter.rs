@@ -1,6 +1,8 @@
 //! A command interpreter for the Pixel OS.
 
 use crate::pxos_db::{self, PxosDatabase};
+use crate::learning_chatbot::LearningChatbot;
+use crate::steering_interface::SteeringInterface;
 
 pub struct CommandInterpreter;
 
@@ -13,7 +15,7 @@ impl CommandInterpreter {
         }
         let op = parts[0];
 
-        let allowed_commands = ["help", "clear", "echo", "rect", "relay", "ask"];
+        let allowed_commands = ["help", "clear", "echo", "rect", "relay", "ask", "improve", "implement", "reject"];
         if !allowed_commands.contains(&op) {
             println!("Security warning: Command '{}' is not allowed.", op);
             return;
@@ -21,7 +23,7 @@ impl CommandInterpreter {
 
         match op {
             "help" => {
-                let help_text = "Available commands:\nhelp - Show this help message\nclear - Clear the screen\necho [message] - Print a message\nrect [x] [y] [w] [h] [color] - Draw a rectangle\nask [prompt] - Ask the AI to generate a command";
+                let help_text = "Available commands:\nhelp - Show this help message\nclear - Clear the screen\necho [message] - Print a message\nrect [x] [y] [w] [h] [color] - Draw a rectangle\nask [prompt] - Ask the AI to generate a command\nimprove [prompt] - Suggest an improvement\nimplement [id] - Implement a proposal\nreject [id] - Reject a proposal";
                 // This is a placeholder for adding a DRAW_TEXT instruction.
                 // For now, we'll just print to the console.
                 println!("{}", help_text);
@@ -76,6 +78,18 @@ impl CommandInterpreter {
                         println!("Error generating command: {}", e);
                     }
                 }
+            }
+            "improve" => {
+                let prompt = parts[1..].join(" ");
+                LearningChatbot::process_message(db, &prompt);
+            }
+            "implement" => {
+                let id = parts[1].parse::<usize>().unwrap();
+                SteeringInterface::handle_decision(db, id, "implement");
+            }
+            "reject" => {
+                let id = parts[1].parse::<usize>().unwrap();
+                SteeringInterface::handle_decision(db, id, "reject");
             }
             _ => {
                 // This is a placeholder for adding a DRAW_TEXT instruction.
