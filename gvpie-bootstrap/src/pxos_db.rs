@@ -13,6 +13,7 @@ pub struct PxosDatabase {
     pub conversation_history: Vec<String>,
     pub improvement_queue: Vec<String>,
     pub pending_proposals: Vec<String>,
+    pub ai_responses: Vec<String>,
 }
 
 /// A definition for a programming language.
@@ -96,6 +97,7 @@ impl PxosDatabase {
             conversation_history: Vec::new(),
             improvement_queue: Vec::new(),
             pending_proposals: Vec::new(),
+            ai_responses: Vec::new(),
         }
     }
 }

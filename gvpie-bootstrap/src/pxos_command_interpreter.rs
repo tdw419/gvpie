@@ -3,19 +3,24 @@
 use crate::pxos_db::{self, PxosDatabase};
 use crate::learning_chatbot::LearningChatbot;
 use crate::steering_interface::SteeringInterface;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct CommandInterpreter;
 
 impl CommandInterpreter {
     /// Parses and executes a command.
-    pub async fn parse_and_execute(db: &mut PxosDatabase, command: &str) {
+    pub async fn parse_and_execute(db_arc: Arc<Mutex<PxosDatabase>>, command: &str) {
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
             return;
         }
         let op = parts[0];
 
-        let allowed_commands = ["help", "clear", "echo", "rect", "relay", "ask", "improve", "implement", "reject"];
+        // We lock the database here to check the allow-list
+        let mut db = db_arc.lock().await;
+
+        let allowed_commands = ["help", "clear", "echo", "rect", "relay", "ask", "improve", "implement", "reject", "process_ai_responses"];
         if !allowed_commands.contains(&op) {
             println!("Security warning: Command '{}' is not allowed.", op);
             return;
@@ -23,18 +28,13 @@ impl CommandInterpreter {
 
         match op {
             "help" => {
-                let help_text = "Available commands:\nhelp - Show this help message\nclear - Clear the screen\necho [message] - Print a message\nrect [x] [y] [w] [h] [color] - Draw a rectangle\nask [prompt] - Ask the AI to generate a command\nimprove [prompt] - Suggest an improvement\nimplement [id] - Implement a proposal\nreject [id] - Reject a proposal";
-                // This is a placeholder for adding a DRAW_TEXT instruction.
-                // For now, we'll just print to the console.
-                println!("{}", help_text);
+                println!("Available commands: help, clear, echo, rect, relay, ask, improve, implement, reject");
             }
             "clear" => {
                 db.canvas.pixels = vec![0; (db.canvas.width * db.canvas.height * 4) as usize];
             }
             "echo" => {
                 let message = parts[1..].join(" ");
-                // This is a placeholder for adding a DRAW_TEXT instruction.
-                // For now, we'll just print to the console.
                 println!("{}", message);
             }
             "rect" => {
@@ -50,50 +50,62 @@ impl CommandInterpreter {
                 for i in 0..w {
                     for j in 0..h {
                         let idx = (((y + j) * db.canvas.width + (x + i)) * 4) as usize;
-                        db.canvas.pixels[idx] = r;
-                        db.canvas.pixels[idx + 1] = g;
-                        db.canvas.pixels[idx + 2] = b;
-                        db.canvas.pixels[idx + 3] = 255;
+                        if idx < db.canvas.pixels.len() {
+                            db.canvas.pixels[idx] = r;
+                            db.canvas.pixels[idx + 1] = g;
+                            db.canvas.pixels[idx + 2] = b;
+                            db.canvas.pixels[idx + 3] = 255;
+                        }
                     }
                 }
             }
             "relay" => {
-                let from = parts[1].to_string();
-                let to = parts[2].to_string();
-                let message = parts[3..].join(" ");
                 db.agent_relays.push(pxos_db::AgentRelay {
-                    from_agent: from,
-                    to_agent: to,
-                    message,
+                    from_agent: parts[1].to_string(),
+                    to_agent: parts[2].to_string(),
+                    message: parts[3..].join(" "),
                 });
             }
             "ask" => {
                 let prompt = parts[1..].join(" ");
-                match crate::lm_studio_bridge::generate_pxo(&prompt).await {
-                    Ok(command) => {
-                        println!("AI generated command: {}", command);
-                        Box::pin(CommandInterpreter::parse_and_execute(db, &command)).await;
+                // Drop the lock before spawning the task
+                drop(db);
+
+                let db_clone = db_arc.clone();
+                tokio::spawn(async move {
+                    match crate::lm_studio_bridge::generate_pxo(&prompt).await {
+                        Ok(command) => {
+                            let mut db = db_clone.lock().await;
+                            db.ai_responses.push(command);
+                        }
+                        Err(e) => {
+                            println!("Error generating command: {}", e);
+                        }
                     }
-                    Err(e) => {
-                        println!("Error generating command: {}", e);
-                    }
-                }
+                });
             }
             "improve" => {
                 let prompt = parts[1..].join(" ");
-                LearningChatbot::process_message(db, &prompt);
+                LearningChatbot::process_message(&mut db, &prompt);
             }
             "implement" => {
                 let id = parts[1].parse::<usize>().unwrap();
-                SteeringInterface::handle_decision(db, id, "implement");
+                SteeringInterface::handle_decision(&mut db, id, "implement");
             }
             "reject" => {
                 let id = parts[1].parse::<usize>().unwrap();
-                SteeringInterface::handle_decision(db, id, "reject");
+                SteeringInterface::handle_decision(&mut db, id, "reject");
+            }
+            "process_ai_responses" => {
+                let responses: Vec<String> = db.ai_responses.drain(..).collect();
+                // Drop the lock before starting to execute responses, which might recurse
+                drop(db);
+
+                for response in responses {
+                    Box::pin(CommandInterpreter::parse_and_execute(db_arc.clone(), &response)).await;
+                }
             }
             _ => {
-                // This is a placeholder for adding a DRAW_TEXT instruction.
-                // For now, we'll just print to the console.
                 println!("Unknown command: {}", op);
             }
         }

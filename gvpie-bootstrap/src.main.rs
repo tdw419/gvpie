@@ -13,12 +13,10 @@ use std::sync::Arc;
 
 use canvas::WgpuHybridCanvas;
 use improvement_engine::ImprovementEngine;
-use learning_chatbot::LearningChatbot;
 use pxos_command_interpreter::CommandInterpreter;
 use pxos_db::PxosDatabase;
 use pxos_event_processor::EventProcessor;
 use pxos_interpreter::PxosInterpreter;
-use steering_interface::SteeringInterface;
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, RequestAdapterOptions,
     Surface, SurfaceConfiguration, SurfaceError, SurfaceTargetUnsafe, TextureUsages,
@@ -37,6 +35,7 @@ struct BootstrapApp {
     config: Option<SurfaceConfiguration>,
     canvas: Option<WgpuHybridCanvas>,
     db: Option<PxosDatabase>,
+    instructions_per_frame: u32,
 }
 
 impl BootstrapApp {
@@ -48,6 +47,7 @@ impl BootstrapApp {
             config: None,
             canvas: None,
             db: None,
+            instructions_per_frame: 10,
         }
     }
 }
@@ -171,11 +171,19 @@ impl ApplicationHandler for BootstrapApp {
                                 payload: format!("{:?}", key),
                             });
                         }
-                        if key == winit::keyboard::KeyCode::KeyI {
-                            if let Some(db) = self.db.as_mut() {
-                                let rt = tokio::runtime::Runtime::new().unwrap();
-                                rt.block_on(CommandInterpreter::parse_and_execute(db, "improve the system is slow"));
+                        match key {
+                            winit::keyboard::KeyCode::ArrowUp => self.instructions_per_frame += 1,
+                            winit::keyboard::KeyCode::ArrowDown => {
+                                if self.instructions_per_frame > 1 {
+                                    self.instructions_per_frame -= 1;
+                                }
                             }
+                            winit::keyboard::KeyCode::KeyA => {
+                                if let Some(db) = self.db.as_mut() {
+                                    pollster::block_on(CommandInterpreter::parse_and_execute(db, "ask draw a red square"));
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -228,11 +236,12 @@ impl ApplicationHandler for BootstrapApp {
             }
         };
 
-        EventProcessor::process_events(db);
-        ImprovementEngine::process_queue(db);
-        println!("Conversation: {:?}", db.conversation_history);
-        println!("Proposals: {:?}", db.pending_proposals);
-        PxosInterpreter::step(db);
+        for _ in 0..self.instructions_per_frame {
+            EventProcessor::process_events(db);
+            ImprovementEngine::process_queue(db);
+            PxosInterpreter::step(db);
+        }
+        self.window.as_ref().unwrap().set_title(&format!("PXOS Database Simulation - {} IPF", self.instructions_per_frame));
         canvas.set_pixels(&db.canvas.pixels);
         canvas.present(&frame.texture);
         frame.present();
@@ -240,8 +249,7 @@ impl ApplicationHandler for BootstrapApp {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn main() {
+fn main() {
     let event_loop = EventLoop::new().expect("event loop");
     let mut app = BootstrapApp::new();
     event_loop.run_app(&mut app).expect("run_app");

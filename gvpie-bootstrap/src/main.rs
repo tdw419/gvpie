@@ -10,6 +10,7 @@ mod steering_interface;
 mod text_cpu;
 
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use canvas::WgpuHybridCanvas;
 use improvement_engine::ImprovementEngine;
@@ -34,7 +35,8 @@ struct BootstrapApp {
     device: Option<Arc<wgpu::Device>>,
     config: Option<SurfaceConfiguration>,
     canvas: Option<WgpuHybridCanvas>,
-    db: Option<PxosDatabase>,
+    db: Arc<Mutex<PxosDatabase>>,
+    instructions_per_frame: u32,
 }
 
 impl BootstrapApp {
@@ -45,7 +47,8 @@ impl BootstrapApp {
             device: None,
             config: None,
             canvas: None,
-            db: None,
+            db: Arc::new(Mutex::new(PxosDatabase::new())),
+            instructions_per_frame: 10,
         }
     }
 }
@@ -102,38 +105,41 @@ impl ApplicationHandler for BootstrapApp {
             config.height,
         );
 
-        let mut db = PxosDatabase::new();
-        db.canvas.width = config.width;
-        db.canvas.height = config.height;
-        db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
+        let db_clone = self.db.clone();
+        pollster::block_on(async {
+            let mut db = db_clone.lock().await;
+            db.canvas.width = config.width;
+            db.canvas.height = config.height;
+            db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
 
-        // Define a language
-        let mut lang = pxos_db::LanguageDef {
-            name: "ppl-v1".to_string(),
-            instructions: Vec::new(),
-        };
-        lang.instructions.push(pxos_db::InstructionDef {
-            op: "SET".to_string(),
-            args: vec!["var".to_string(), "value".to_string()],
+            // Define a language
+            let mut lang = pxos_db::LanguageDef {
+                name: "ppl-v1".to_string(),
+                instructions: Vec::new(),
+            };
+            lang.instructions.push(pxos_db::InstructionDef {
+                op: "SET".to_string(),
+                args: vec!["var".to_string(), "value".to_string()],
+            });
+            lang.instructions.push(pxos_db::InstructionDef {
+                op: "DRAW_PIXEL".to_string(),
+                args: vec!["x".to_string(), "y".to_string(), "color".to_string()],
+            });
+            db.language_defs.insert("ppl-v1".to_string(), lang);
+
+            // Create a program
+            let program = pxos_db::Program {
+                id: "prog-1".to_string(),
+                language: "ppl-v1".to_string(),
+                source: "DRAW_PIXEL 10 10 #ff0000\nDRAW_PIXEL 11 10 #00ff00\nDRAW_PIXEL 12 10 #0000ff".to_string(),
+            };
+            db.programs.insert("prog-1".to_string(), program);
+
+            // Set VM state
+            db.vm_state.program_id = "prog-1".to_string();
         });
-        lang.instructions.push(pxos_db::InstructionDef {
-            op: "DRAW_PIXEL".to_string(),
-            args: vec!["x".to_string(), "y".to_string(), "color".to_string()],
-        });
-        db.language_defs.insert("ppl-v1".to_string(), lang);
 
-        // Create a program
-        let program = pxos_db::Program {
-            id: "prog-1".to_string(),
-            language: "ppl-v1".to_string(),
-            source: "DRAW_PIXEL 10 10 #ff0000\nDRAW_PIXEL 11 10 #00ff00\nDRAW_PIXEL 12 10 #0000ff".to_string(),
-        };
-        db.programs.insert("prog-1".to_string(), program);
 
-        // Set VM state
-        db.vm_state.program_id = "prog-1".to_string();
-
-        self.db = Some(db);
         self.canvas = Some(canvas);
         self.config = Some(config);
         self.device = Some(device);
@@ -148,44 +154,61 @@ impl ApplicationHandler for BootstrapApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(new_size) => {
-                if let (Some(surface), Some(device), Some(config), Some(canvas), Some(db)) =
-                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut(), self.canvas.as_mut(), self.db.as_mut())
+                if let (Some(surface), Some(device), Some(config), Some(canvas)) =
+                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut(), self.canvas.as_mut())
                 {
+                    let db_clone = self.db.clone();
                     config.width = new_size.width.max(1);
                     config.height = new_size.height.max(1);
                     surface.configure(device.as_ref(), config);
                     canvas.resize(config.width, config.height);
-                    db.canvas.width = config.width;
-                    db.canvas.height = config.height;
-                    db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
+                    pollster::block_on(async {
+                        let mut db = db_clone.lock().await;
+                        db.canvas.width = config.width;
+                        db.canvas.height = config.height;
+                        db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
+                    });
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == winit::event::ElementState::Pressed {
                     if let winit::keyboard::PhysicalKey::Code(key) = event.physical_key {
-                        if let Some(db) = self.db.as_mut() {
+                        let db_clone = self.db.clone();
+                        pollster::block_on(async {
+                            let mut db = db_clone.lock().await;
                             db.input_events.push(pxos_db::InputEvent {
                                 event_type: "keyboard".to_string(),
                                 payload: format!("{:?}", key),
                             });
-                        }
-                        if key == winit::keyboard::KeyCode::KeyI {
-                            if let Some(db) = self.db.as_mut() {
-                                let rt = tokio::runtime::Runtime::new().unwrap();
-                                rt.block_on(CommandInterpreter::parse_and_execute(db, "improve the system is slow"));
+                        });
+                        match key {
+                            winit::keyboard::KeyCode::ArrowUp => self.instructions_per_frame += 1,
+                            winit::keyboard::KeyCode::ArrowDown => {
+                                if self.instructions_per_frame > 1 {
+                                    self.instructions_per_frame -= 1;
+                                }
                             }
+                            winit::keyboard::KeyCode::KeyA => {
+                                let db_clone = self.db.clone();
+                                tokio::spawn(async move {
+                                    CommandInterpreter::parse_and_execute(db_clone, "ask draw a red square").await;
+                                });
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if state == winit::event::ElementState::Pressed {
-                    if let Some(db) = self.db.as_mut() {
+                    let db_clone = self.db.clone();
+                    pollster::block_on(async {
+                        let mut db = db_clone.lock().await;
                         db.input_events.push(pxos_db::InputEvent {
                             event_type: "mouse".to_string(),
                             payload: format!("{:?}", button),
                         });
-                    }
+                    });
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {}
@@ -194,14 +217,13 @@ impl ApplicationHandler for BootstrapApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (surface, device, config, canvas, db) = match (
+        let (surface, device, config, canvas) = match (
             self.surface.as_ref(),
             self.device.as_ref(),
             self.config.as_ref(),
             self.canvas.as_mut(),
-            self.db.as_mut(),
         ) {
-            (Some(s), Some(d), Some(c), Some(m), Some(db)) => (s, d, c, m, db),
+            (Some(s), Some(d), Some(c), Some(m)) => (s, d, c, m),
             _ => return,
         };
 
@@ -226,9 +248,27 @@ impl ApplicationHandler for BootstrapApp {
             }
         };
 
-        EventProcessor::process_events(db);
-        ImprovementEngine::process_queue(db);
-        PxosInterpreter::step(db);
+        let db_clone = self.db.clone();
+        let instructions_per_frame = self.instructions_per_frame;
+
+        // Run synchronous simulation steps
+        pollster::block_on(async {
+            let mut db = db_clone.lock().await;
+            for _ in 0..instructions_per_frame {
+                EventProcessor::process_events(&mut db);
+                ImprovementEngine::process_queue(&mut db);
+                PxosInterpreter::step(&mut db);
+            }
+        });
+
+        // Run asynchronous command processing
+        let db_clone_for_async = self.db.clone();
+        pollster::block_on(async {
+            CommandInterpreter::parse_and_execute(db_clone_for_async, "process_ai_responses").await;
+        });
+
+        let db = pollster::block_on(self.db.lock());
+        self.window.as_ref().unwrap().set_title(&format!("PXOS Database Simulation - {} IPF", self.instructions_per_frame));
         canvas.set_pixels(&db.canvas.pixels);
         canvas.present(&frame.texture);
         frame.present();
