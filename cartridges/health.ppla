@@ -1,0 +1,27 @@
+# PPL Health Probe
+# Reads from health probe port (0x20)
+# If the value is non-zero, it prints "OK"
+# Otherwise, it prints "BAD"
+
+IN R0, 0x20
+CMP R0, 0
+JNZ print_ok
+
+# Print "BAD"
+MOV R1, 'B'
+OUT R1, 0x10
+MOV R1, 'A'
+OUT R1, 0x10
+MOV R1, 'D'
+OUT R1, 0x10
+JMP end
+
+print_ok:
+# Print "OK"
+MOV R1, 'O'
+OUT R1, 0x10
+MOV R1, 'K'
+OUT R1, 0x10
+
+end:
+HALT

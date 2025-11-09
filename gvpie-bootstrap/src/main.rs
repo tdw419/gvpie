@@ -1,23 +1,10 @@
-mod canvas;
-mod improvement_engine;
-mod learning_chatbot;
-mod lm_studio_bridge;
-mod pxos_command_interpreter;
-mod pxos_db;
-mod pxos_event_processor;
-mod pxos_interpreter;
-mod steering_interface;
+mod gvx_canvas;
 mod text_cpu;
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
-use canvas::WgpuHybridCanvas;
-use improvement_engine::ImprovementEngine;
-use pxos_command_interpreter::CommandInterpreter;
-use pxos_db::PxosDatabase;
-use pxos_event_processor::EventProcessor;
-use pxos_interpreter::PxosInterpreter;
+use gvx_canvas::WgpuHybridCanvas;
+use gpu_memory_manager::{Architecture, GPUMemoryManager, GpuSyscallTrap};
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, RequestAdapterOptions,
     Surface, SurfaceConfiguration, SurfaceError, SurfaceTargetUnsafe, TextureUsages,
@@ -34,9 +21,8 @@ struct BootstrapApp {
     surface: Option<Surface<'static>>,
     device: Option<Arc<wgpu::Device>>,
     config: Option<SurfaceConfiguration>,
-    canvas: Option<WgpuHybridCanvas>,
-    db: Arc<Mutex<PxosDatabase>>,
-    instructions_per_frame: u32,
+    manager: Option<GPUMemoryManager<WgpuHybridCanvas>>,
+    trap: Option<GpuSyscallTrap>,
 }
 
 impl BootstrapApp {
@@ -46,9 +32,8 @@ impl BootstrapApp {
             surface: None,
             device: None,
             config: None,
-            canvas: None,
-            db: Arc::new(Mutex::new(PxosDatabase::new())),
-            instructions_per_frame: 10,
+            manager: None,
+            trap: None,
         }
     }
 }
@@ -60,7 +45,7 @@ impl ApplicationHandler for BootstrapApp {
         }
 
         let instance = Instance::new(InstanceDescriptor::default());
-        let window_attrs = WindowAttributes::default().with_title("PXOS Database Simulation");
+        let window_attrs = WindowAttributes::default().with_title("gvpie-bootstrap + GVX");
         let window = event_loop.create_window(window_attrs).expect("window");
         self.window = Some(window);
         let window_ref = self.window.as_ref().expect("window stored");
@@ -98,49 +83,27 @@ impl ApplicationHandler for BootstrapApp {
         };
         surface.configure(device.as_ref(), &config);
 
-        let canvas = WgpuHybridCanvas::new(
+        let mut manager = GPUMemoryManager::new(WgpuHybridCanvas::new(
             device.clone(),
             queue.clone(),
             config.width,
             config.height,
-        );
+        ));
+        let pid = manager.create_process(Architecture::X86_64);
+        let base: u64 = 0x1000_0000;
+        let text = b"dir1 dir2\n";
+        manager.map_emulated_memory(pid, base, text.len());
+        manager.write_emulated_data(pid, base, text);
+        let trap = GpuSyscallTrap {
+            pid,
+            syscall_num: 1,
+            arg1: 1,
+            arg2: base,
+            arg3: text.len() as u64,
+        };
 
-        let db_clone = self.db.clone();
-        pollster::block_on(async {
-            let mut db = db_clone.lock().await;
-            db.canvas.width = config.width;
-            db.canvas.height = config.height;
-            db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
-
-            // Define a language
-            let mut lang = pxos_db::LanguageDef {
-                name: "ppl-v1".to_string(),
-                instructions: Vec::new(),
-            };
-            lang.instructions.push(pxos_db::InstructionDef {
-                op: "SET".to_string(),
-                args: vec!["var".to_string(), "value".to_string()],
-            });
-            lang.instructions.push(pxos_db::InstructionDef {
-                op: "DRAW_PIXEL".to_string(),
-                args: vec!["x".to_string(), "y".to_string(), "color".to_string()],
-            });
-            db.language_defs.insert("ppl-v1".to_string(), lang);
-
-            // Create a program
-            let program = pxos_db::Program {
-                id: "prog-1".to_string(),
-                language: "ppl-v1".to_string(),
-                source: "DRAW_PIXEL 10 10 #ff0000\nDRAW_PIXEL 11 10 #00ff00\nDRAW_PIXEL 12 10 #0000ff".to_string(),
-            };
-            db.programs.insert("prog-1".to_string(), program);
-
-            // Set VM state
-            db.vm_state.program_id = "prog-1".to_string();
-        });
-
-
-        self.canvas = Some(canvas);
+        self.trap = Some(trap);
+        self.manager = Some(manager);
         self.config = Some(config);
         self.device = Some(device);
         self.surface = Some(surface);
@@ -154,61 +117,13 @@ impl ApplicationHandler for BootstrapApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(new_size) => {
-                if let (Some(surface), Some(device), Some(config), Some(canvas)) =
-                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut(), self.canvas.as_mut())
+                if let (Some(surface), Some(device), Some(config), Some(manager)) =
+                    (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut(), self.manager.as_mut())
                 {
-                    let db_clone = self.db.clone();
                     config.width = new_size.width.max(1);
                     config.height = new_size.height.max(1);
                     surface.configure(device.as_ref(), config);
-                    canvas.resize(config.width, config.height);
-                    pollster::block_on(async {
-                        let mut db = db_clone.lock().await;
-                        db.canvas.width = config.width;
-                        db.canvas.height = config.height;
-                        db.canvas.pixels = vec![0; (config.width * config.height * 4) as usize];
-                    });
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == winit::event::ElementState::Pressed {
-                    if let winit::keyboard::PhysicalKey::Code(key) = event.physical_key {
-                        let db_clone = self.db.clone();
-                        pollster::block_on(async {
-                            let mut db = db_clone.lock().await;
-                            db.input_events.push(pxos_db::InputEvent {
-                                event_type: "keyboard".to_string(),
-                                payload: format!("{:?}", key),
-                            });
-                        });
-                        match key {
-                            winit::keyboard::KeyCode::ArrowUp => self.instructions_per_frame += 1,
-                            winit::keyboard::KeyCode::ArrowDown => {
-                                if self.instructions_per_frame > 1 {
-                                    self.instructions_per_frame -= 1;
-                                }
-                            }
-                            winit::keyboard::KeyCode::KeyA => {
-                                let db_clone = self.db.clone();
-                                tokio::spawn(async move {
-                                    CommandInterpreter::parse_and_execute(db_clone, "ask draw a red square").await;
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if state == winit::event::ElementState::Pressed {
-                    let db_clone = self.db.clone();
-                    pollster::block_on(async {
-                        let mut db = db_clone.lock().await;
-                        db.input_events.push(pxos_db::InputEvent {
-                            event_type: "mouse".to_string(),
-                            payload: format!("{:?}", button),
-                        });
-                    });
+                    manager.resize_canvas(config.width, config.height);
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => {}
@@ -217,13 +132,14 @@ impl ApplicationHandler for BootstrapApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (surface, device, config, canvas) = match (
+        let (surface, device, config, manager, trap) = match (
             self.surface.as_ref(),
             self.device.as_ref(),
             self.config.as_ref(),
-            self.canvas.as_mut(),
+            self.manager.as_mut(),
+            self.trap.as_ref(),
         ) {
-            (Some(s), Some(d), Some(c), Some(m)) => (s, d, c, m),
+            (Some(surface), Some(device), Some(config), Some(manager), Some(trap)) => (surface, device, config, manager, trap),
             _ => return,
         };
 
@@ -248,36 +164,16 @@ impl ApplicationHandler for BootstrapApp {
             }
         };
 
-        let db_clone = self.db.clone();
-        let instructions_per_frame = self.instructions_per_frame;
-
-        // Run synchronous simulation steps
-        pollster::block_on(async {
-            let mut db = db_clone.lock().await;
-            for _ in 0..instructions_per_frame {
-                EventProcessor::process_events(&mut db);
-                ImprovementEngine::process_queue(&mut db);
-                PxosInterpreter::step(&mut db);
-            }
-        });
-
-        // Run asynchronous command processing
-        let db_clone_for_async = self.db.clone();
-        pollster::block_on(async {
-            CommandInterpreter::parse_and_execute(db_clone_for_async, "process_ai_responses").await;
-        });
-
-        let db = pollster::block_on(self.db.lock());
-        self.window.as_ref().unwrap().set_title(&format!("PXOS Database Simulation - {} IPF", self.instructions_per_frame));
-        canvas.set_pixels(&db.canvas.pixels);
-        canvas.present(&frame.texture);
+        manager.begin_frame();
+        let _ = manager.handle_emulated_syscall(trap);
+        manager.end_frame();
+        manager.canvas_mut().present(&frame.texture);
         frame.present();
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[tokio::main]
-async fn main() {
+fn main() {
     let event_loop = EventLoop::new().expect("event loop");
     let mut app = BootstrapApp::new();
     event_loop.run_app(&mut app).expect("run_app");

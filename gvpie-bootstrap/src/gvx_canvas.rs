@@ -6,6 +6,8 @@ use wgpu::{
     ImageDataLayout, Origin3d, Queue, Texture, TextureAspect,
 };
 
+use hybrid_canvas::{HybridCanvasBackend, TextRunOperation};
+
 use crate::text_cpu::CpuTextSurface;
 
 pub struct WgpuHybridCanvas {
@@ -32,10 +34,6 @@ impl WgpuHybridCanvas {
         self.width = width.max(1);
         self.height = height.max(1);
         self.cpu = CpuTextSurface::new(self.width, self.height);
-    }
-
-    pub fn set_pixels(&mut self, pixels: &[u8]) {
-        self.cpu.set_pixels(pixels);
     }
 
     pub fn present(&mut self, texture: &Texture) {
@@ -87,5 +85,24 @@ impl WgpuHybridCanvas {
         );
 
         self.queue.submit([encoder.finish()]);
+    }
+}
+
+impl HybridCanvasBackend for WgpuHybridCanvas {
+    fn begin_frame(&mut self) {
+        self.cpu.clear_rgba([0x12, 0x12, 0x16, 0xFF]);
+    }
+
+    fn execute_text_run(&mut self, op: TextRunOperation) {
+        self.cpu
+            .draw_text(&op.text, op.x as i32, op.y as i32 + op.px_size as i32, op.px_size);
+    }
+
+    fn end_frame(&mut self) {
+        // staging upload happens in `present`
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.resize(width, height);
     }
 }

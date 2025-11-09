@@ -1,0 +1,15 @@
+# Simple "Hello\n" program in PPL assembly
+
+MOV R0, 'H'
+OUT R0, 0x10
+MOV R0, 'e'
+OUT R0, 0x10
+MOV R0, 'l'
+OUT R0, 0x10
+MOV R0, 'l'
+OUT R0, 0x10
+MOV R0, 'o'
+OUT R0, 0x10
+MOV R0, '\n'
+OUT R0, 0x10
+HALT
